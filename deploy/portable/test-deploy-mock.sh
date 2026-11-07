@@ -38,7 +38,11 @@ set -Eeuo pipefail
 printf 'backup\n' >> "$MOCK_LOG"
 if [[ "${MOCK_FAIL_BACKUP:-0}" == 1 ]]; then exit 7; fi
 SH
-chmod 700 "$TEST_ROOT/bin/docker" "$TEST_ROOT/bin/curl" "$TEST_ROOT/backup"
+cat > "$TEST_ROOT/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod 700 "$TEST_ROOT/bin/docker" "$TEST_ROOT/bin/curl" "$TEST_ROOT/bin/sleep" "$TEST_ROOT/backup"
 export PATH="$TEST_ROOT/bin:$PATH"
 export DEPLOY_ROOT="$TEST_ROOT/app"
 export DEPLOY_LOCK_FILE="$TEST_ROOT/lock"
