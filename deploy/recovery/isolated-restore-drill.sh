@@ -70,5 +70,17 @@ TABLE_COUNT="$(docker exec "$NAME" psql -U postgres -d openproject_restore_test 
 [[ "$TABLE_COUNT" =~ ^[0-9]+$ && "$TABLE_COUNT" -gt 0 ]] || {
   echo "Restore did not create user tables" >&2; exit 1;
 }
+# For actual OpenProject backups, require core tables, printing only counts.
+if [[ "${RESTORE_EXPECT_APP_SCHEMA:-0}" == "1" ]]; then
+  for table in users projects work_packages attachments; do
+    present="$(docker exec "$NAME" psql -U postgres -d openproject_restore_test -Atc \
+      "SELECT to_regclass('public.$table') IS NOT NULL")"
+    [[ "$present" == t ]] || { echo "Missing OpenProject table $table" >&2; exit 1; }
+    count="$(docker exec "$NAME" psql -U postgres -d openproject_restore_test -Atc \
+      "SELECT count(*) FROM public.$table")"
+    [[ "$count" =~ ^[0-9]+$ ]] || { echo "Invalid row count for $table" >&2; exit 1; }
+    echo "RESTORED_TABLE $table rows=$count"
+  done
+fi
 echo "RESTORE_DRILL_PASS: PostgreSQL public tables=$TABLE_COUNT; asset_files=$ASSET_COUNT"
 echo "This is a structural restore only. Application-level smoke tests and secrets validation remain outstanding."
