@@ -61,7 +61,10 @@ docker compose -f compose.yaml -f "$OVERRIDE" config --quiet
 docker compose -f compose.yaml -f "$OVERRIDE" up -d --no-deps web worker
 healthy=no
 for n in $(seq 1 36); do
-  if curl --fail --silent --max-time 8 -o /dev/null -H "Host: $HOST" "$URL"; then healthy=yes; break; fi
+  # Rails may force HTTPS and redirect plain HTTP. Forwarded scheme mirrors
+  # the trusted TLS proxy; require HTTP 200, not a 301/302 redirect.
+  status="$(curl --silent --show-error --max-time 8 -o /dev/null -w '%{http_code}' -H "Host: $HOST" -H 'X-Forwarded-Proto: https' "$URL")" || status="000"
+  if [[ "$status" == 200 ]]; then healthy=yes; break; fi
   sleep 10
 done
 [[ "$healthy" == yes ]] || { echo "Health check failed: $URL" >&2; false; }
