@@ -18,7 +18,7 @@ FILES = {
 }
 CHANNELS = {"pilot", "staging", "production"}
 IMAGE_PATTERN = re.compile(r"ghcr\.io/aristha/openproject@sha256:[0-9a-f]{64}\Z")
-SHA_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 
 
 def verify(directory: pathlib.Path) -> None:
