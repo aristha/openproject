@@ -1,0 +1,19 @@
+[Unit]
+Description=Beta Soft OpenProject consistent-checkpoint backup to S3
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/openproject-pilot
+Environment=DEPLOY_ROOT=/opt/openproject-pilot
+Environment=AWS_REGION=ap-southeast-2
+EnvironmentFile=/etc/betasoft/openproject-backup.env
+ExecStart=/usr/local/libexec/betasoft-aws-s3-backup.sh
+TimeoutStartSec=25min
+UMask=0077
+NoNewPrivileges=true
+# NOTE: Container and S3 operations require Docker socket and EC2 instance profile.
