@@ -1,0 +1,47 @@
+name: Fork / Portable deployment checks
+
+"on":
+  pull_request:
+    paths:
+      - deploy/**
+      - docs/operations/betasoft-pilot-deploy.md
+      - .github/workflows/fork-prepare-portable-release.yml
+      - .github/workflows/fork-portable-deploy-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'aristha/openproject'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bash syntax checks
+        run: |
+          set -euo pipefail
+          bash -n deploy/portable/deploy.sh
+          bash -n deploy/adapters/aws-s3-backup.sh
+      - name: Offline dry run and invalid input rejection
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          trap 'rm -rf "$test_root"' EXIT
+          printf 'services: {}\n' > "$test_root/compose.yaml"
+          digest="sha256:$(printf 'a%.0s' {1..64})"
+          DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --dry-run "ghcr.io/aristha/openproject@$digest"
+          if DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --dry-run 'ghcr.io/aristha/openproject:latest'; then
+            echo 'Mutable tag was unexpectedly accepted' >&2
+            exit 1
+          fi
+          if DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --execute "ghcr.io/aristha/openproject@$digest"; then
+            echo 'Unapproved execution was unexpectedly accepted' >&2
+            exit 1
+          fi
+          echo "Offline portable deploy checks passed."
