@@ -1,5 +1,5 @@
 [Unit]
-Description=Beta Soft OpenProject consistent-checkpoint backup to S3
+Description=Beta Soft OpenProject verified upload backup to S3
 Wants=network-online.target
 After=network-online.target docker.service
 Requires=docker.service
