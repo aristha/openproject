@@ -109,8 +109,10 @@ sudo bash /absolute/path/verify-s3-manual-backup.sh \
   /absolute/path/isolated-restore-drill.sh
 ```
 
-Capture **only** the redacted terminal lines
-`S3_OBJECT_MATCH`, `S3_COMPARE_PASS`, and `RESTORE_DRILL_PASS` in Issue #5.
+Capture **only** the terminal lines `S3_OBJECT_MATCH`, `S3_COMPARE_PASS`,
+`RESTORED_TABLE` (aggregate counts only) and `RESTORE_DRILL_PASS` in Issue #5.
+The S3 wrapper requires `users`, `projects`, `work_packages` and `attachments`
+tables to exist in the restored database.
 Do not paste passwords, access tokens, complete dump data, or attachment
 contents. If local original missing, do not fabricate a trusted manifest;
 obtain a fresh backup with recorded hashes and verify its origin.
