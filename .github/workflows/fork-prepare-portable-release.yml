@@ -60,6 +60,8 @@ jobs:
           PY
           cp deploy/portable/deploy.sh dist/deploy.sh
           cp deploy/adapters/aws-s3-backup.sh dist/aws-s3-backup.sh
+          cp deploy/systemd/betasoft-openproject-backup.service dist/
+          cp deploy/systemd/betasoft-openproject-backup.timer dist/
           sha256sum dist/* > dist/SHA256SUMS
           cat dist/release.json >> "$GITHUB_STEP_SUMMARY"
           echo "Release bundle prepared only; NOTHING deployed." >> "$GITHUB_STEP_SUMMARY"
