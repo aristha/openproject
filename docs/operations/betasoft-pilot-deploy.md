@@ -175,3 +175,33 @@ Set up backup freshness alarms and S3 retention separately.
 If the EC2 Stop schedule is wrong, enabling this timer does not fix it. Verify
 EventBridge Start/Stop independently. Do not enable the timer on future
 non-AWS hosts without replacing the backup adapter.
+
+## Release bundle integrity gate (added in PR #3)
+
+The `Fork / Prepare portable release` workflow now validates a generated
+bundle locally before artifact upload. An operator can re-check an extracted
+artifact on any Python 3 host by running the verifier from the exact reviewed
+source commit:
+
+```bash
+python3 deploy/portable/verify_release.py /absolute/path/to/extracted-release
+```
+
+A valid bundle has only `release.json`, `SHA256SUMS`, `deploy.sh`,
+`aws-s3-backup.sh`, `betasoft-openproject-backup.service` and
+`betasoft-openproject-backup.timer`. Checksum entries are relative to the
+bundle directory. It checks digest syntax, source revision, environment channel
+and the `not-performed` migration declaration.
+
+**Security limit:** checksums contained in the same artifact detect accidental
+corruption and inconsistent packaging, but a malicious actor able to replace
+the entire artifact could replace its checksums too. They **do not** prove image
+provenance, trusted approval, or correct database migration. For production,
+reconcile source SHA, the reviewed GHCR build job and immutable image digest
+independently; use GitHub environment protections and explicit approval.
+Deployment remains manual on each host.
+
+CI also exercises schema gate, fail-closed backup and configuration rollback
+using mocked `docker` and `curl`; these checks do **not** prove real host
+rollback or application recovery. Never run an image migration based only on
+these tests.
