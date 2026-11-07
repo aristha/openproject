@@ -28,6 +28,7 @@ jobs:
           set -euo pipefail
           bash -n deploy/portable/deploy.sh
           bash -n deploy/adapters/aws-s3-backup.sh
+          bash -n deploy/portable/test-deploy-mock.sh
       - name: Validate optional backup calendar
         shell: bash
         run: |
@@ -53,3 +54,8 @@ jobs:
             exit 1
           fi
           echo "Offline portable deploy checks passed."
+      - name: Mock deploy safety and rollback tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash deploy/portable/test-deploy-mock.sh
