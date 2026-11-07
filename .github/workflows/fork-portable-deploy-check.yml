@@ -27,6 +27,49 @@ jobs:
           set -euo pipefail
           bash -n deploy/portable/deploy.sh
           bash -n deploy/adapters/aws-s3-backup.sh
+      - name: Validate optional backup calendar
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemd-analyze calendar 'Mon..Fri *-*-* 17:45:00 Asia/Ho_Chi_Minh'
+          grep -q '^Persistent=false
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          trap 'rm -rf "$test_root"' EXIT
+          printf 'services: {}\n' > "$test_root/compose.yaml"
+          digest="sha256:$(printf 'a%.0s' {1..64})"
+          DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --dry-run "ghcr.io/aristha/openproject@$digest"
+          if DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --dry-run 'ghcr.io/aristha/openproject:latest'; then
+            echo 'Mutable tag was unexpectedly accepted' >&2
+            exit 1
+          fi
+          if DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --execute "ghcr.io/aristha/openproject@$digest"; then
+            echo 'Unapproved execution was unexpectedly accepted' >&2
+            exit 1
+          fi
+          echo "Offline portable deploy checks passed."
+ deploy/systemd/betasoft-openproject-backup.timer
+          grep -q '^TimeoutStartSec=25min
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          trap 'rm -rf "$test_root"' EXIT
+          printf 'services: {}\n' > "$test_root/compose.yaml"
+          digest="sha256:$(printf 'a%.0s' {1..64})"
+          DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --dry-run "ghcr.io/aristha/openproject@$digest"
+          if DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --dry-run 'ghcr.io/aristha/openproject:latest'; then
+            echo 'Mutable tag was unexpectedly accepted' >&2
+            exit 1
+          fi
+          if DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --execute "ghcr.io/aristha/openproject@$digest"; then
+            echo 'Unapproved execution was unexpectedly accepted' >&2
+            exit 1
+          fi
+          echo "Offline portable deploy checks passed."
+ deploy/systemd/betasoft-openproject-backup.service
       - name: Offline dry run and invalid input rejection
         shell: bash
         run: |
