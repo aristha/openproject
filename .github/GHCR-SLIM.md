@@ -29,6 +29,18 @@ digest and size. Failed builds have no new verified digest or size; inspect
 the failing step and BuildKit build record. Build records can contain source
 and build logs, so do not add secrets to build arguments or the context.
 
+`SecretsUsedInArgOrEnv` is the only skipped Dockerfile rule: upstream deliberately
+sets `SECRET_KEY_BASE=OVERWRITE_ME` and an empty Hocuspocus secret. All other
+Dockerfile checks, including the dedicated check step, remain enabled. A preflight
+policy rejects changed/extra credential-like ARG/ENV declarations and workflow
+build arguments/secret inputs. Real credentials must be supplied at runtime.
+After publishing (or reusing) a digest, pinned Trivy scans the image filesystem
+and image configuration/history for embedded secrets. Findings fail the run;
+the JSON report is private to the ephemeral runner
+and removed without printing or uploading it. This is detection, not proof that
+every possible credential is absent; a failed scan does not retract a published
+tag. Investigate and rotate any real credential before anyone consumes that image.
+
 ## Build requirements and resource limits
 
 Use a clean full checkout as the build context, not a local development tree.

@@ -40,6 +40,11 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "reference=ghcr.io/$repository:$tag" >> "$GITHUB_OUTPUT"
 
+      - name: Validate production secret defaults and build inputs
+        run: |
+          python3 -B -m unittest discover -s .github/scripts -p 'test_production_secret_policy.py'
+          python3 -B .github/scripts/production_secret_policy.py
+
       - name: Refuse to overwrite an existing SHA tag
         id: existing
         env:
@@ -111,6 +116,30 @@ jobs:
           GHCR_DIGEST: ${{ steps.build.outputs.digest || steps.existing.outputs.digest }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 .github/scripts/ghcr-image.py report
+
+      - name: Scan the published image for embedded secrets
+        if: steps.existing.outputs.exists == 'true' || steps.build.outcome == 'success'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.70.0
+          image-ref: ghcr.io/${{ steps.image.outputs.repository }}@${{ steps.build.outputs.digest || steps.existing.outputs.digest }}
+          scanners: secret
+          exit-code: '1'
+          format: json
+          output: ${{ runner.temp }}/ghcr-secret-scan.json
+          cache: false
+          timeout: 15m
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          TRIVY_IMAGE_SRC: remote
+          TRIVY_IMAGE_CONFIG_SCANNERS: secret
+          TRIVY_PLATFORM: linux/amd64
+          TRIVY_PARALLEL: '2'
+
+      - name: Remove the private secret scan report
+        if: always()
+        run: rm -f "$RUNNER_TEMP/ghcr-secret-scan.json"
 
       - name: Record result and final resources
         if: always()
