@@ -49,6 +49,7 @@ echo "Assets restored to isolated scratch directory; file_count=$ASSET_COUNT"
 # No published ports and no network: the disposable DB is inaccessible remotely.
 # Trust authentication is scoped solely to this ephemeral isolated container.
 docker run -d --name "$NAME" --network none \
+  --memory=768m --cpus=1 --pids-limit=128 \
   -e POSTGRES_HOST_AUTH_METHOD=trust \
   --mount "type=bind,source=$INPUT,target=/backup,readonly" \
   postgres:17 -c shared_buffers=64MB -c max_connections=20 >/dev/null
