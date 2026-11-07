@@ -1,0 +1,54 @@
+name: Fork / Community UI config checks
+
+"on":
+  pull_request:
+    paths:
+      - deploy/overlays/**
+      - docs/operations/betasoft-community-ui.md
+      - .github/workflows/fork-community-ui-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'aristha/openproject'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate Compose overlay and limited scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/compose-test"
+          cat > "$RUNNER_TEMP/compose-test/compose.yaml" <<'YAML'
+          services:
+            web:
+              image: alpine:3.21
+            worker:
+              image: alpine:3.21
+            db:
+              image: postgres:17
+          YAML
+          cp deploy/overlays/compose.community-ui.example.yaml \
+            "$RUNNER_TEMP/compose-test/compose.community-ui.yaml"
+          docker compose -f "$RUNNER_TEMP/compose-test/compose.yaml" \
+            -f "$RUNNER_TEMP/compose-test/compose.community-ui.yaml" \
+            config --format json > "$RUNNER_TEMP/effective.json"
+          python3 - "$RUNNER_TEMP/effective.json" <<'PY'
+          import json
+          import sys
+
+          services = json.load(open(sys.argv[1], encoding="utf-8"))["services"]
+          for name in ("web", "worker"):
+              env = services[name]["environment"]
+              assert env["OPENPROJECT_EE__HIDE__BANNERS"] == "true"
+              assert env["OPENPROJECT_EE__MANAGER__VISIBLE"] == "false"
+          assert "OPENPROJECT_EE__HIDE__BANNERS" not in services["db"].get("environment", {})
+          print("PASS: EE promotional UI overlay targets web and worker only.")
+          PY
