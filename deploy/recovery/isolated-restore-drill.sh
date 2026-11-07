@@ -12,7 +12,7 @@ INPUT="$(cd "$1" && pwd -P)"
   echo "Required database.dump and assets.tar.gz not found" >&2
   exit 2
 }
-for binary in docker tar sha256sum find mktemp; do command -v "$binary" >/dev/null; done
+for binary in docker tar sha256sum find mktemp python3; do command -v "$binary" >/dev/null; done
 
 if [[ -f "$INPUT/SHA256SUMS" ]]; then
   (cd "$INPUT" && sha256sum --check --status SHA256SUMS) || {
@@ -33,7 +33,16 @@ trap cleanup EXIT
 mkdir -p "$WORK/assets"
 # First inspect attachment archive and then restore into temporary, isolated directory.
 tar -tzf "$INPUT/assets.tar.gz" >/dev/null
-tar -xzf "$INPUT/assets.tar.gz" -C "$WORK/assets"
+# Python's 'data' extraction filter rejects traversal, absolute paths and unsafe links.
+# Do not trust file names stored inside a remote backup archive.
+python3 - "$INPUT/assets.tar.gz" "$WORK/assets" <<'PY'
+import sys
+import tarfile
+
+archive_path, output_dir = sys.argv[1:]
+with tarfile.open(archive_path, mode="r:gz") as archive:
+    archive.extractall(output_dir, filter="data")
+PY
 ASSET_COUNT="$(find "$WORK/assets" -type f | wc -l)"
 echo "Assets restored to isolated scratch directory; file_count=$ASSET_COUNT"
 
