@@ -8,7 +8,7 @@ case "$MODE" in --dry-run|--execute) ;; *) echo "Usage: deploy.sh --dry-run|--ex
 
 ROOT="${DEPLOY_ROOT:-/opt/openproject-pilot}"
 HOST="${DEPLOY_HOST:-projects.betajapansoftware.com}"
-URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:8080/health_checks/default}"
+URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:8080/health_check}"
 BACKUP_HOOK="${DEPLOY_BACKUP_HOOK:-}"
 LOCK="${DEPLOY_LOCK_FILE:-/tmp/openproject-portable-deploy.lock}"
 OVERRIDE=compose.deploy.yaml
