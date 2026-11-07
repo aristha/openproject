@@ -63,6 +63,7 @@ jobs:
           cp deploy/systemd/betasoft-openproject-backup.service dist/
           cp deploy/systemd/betasoft-openproject-backup.timer dist/
           sha256sum dist/* > dist/SHA256SUMS
+          python3 deploy/portable/verify_release.py dist
           cat dist/release.json >> "$GITHUB_STEP_SUMMARY"
           echo "Release bundle prepared only; NOTHING deployed." >> "$GITHUB_STEP_SUMMARY"
       - name: Upload portable release bundle
