@@ -1,3 +1,7 @@
+# check=skip=SecretsUsedInArgOrEnv
+
+# Upstream runtime defaults below are a public placeholder and an empty value.
+# CI enforces those literals and scans the image; real secrets belong at runtime.
 ARG RUBY_VERSION="4.0.9"
 ARG DEBIAN_BASE="trixie"
 # Add SBOM scan context for intermediate steps
