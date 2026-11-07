@@ -1,0 +1,66 @@
+name: Fork / Portable deployment checks
+
+"on":
+  pull_request:
+    paths:
+      - deploy/**
+      - docs/operations/betasoft-pilot-deploy.md
+      - .github/workflows/fork-prepare-portable-release.yml
+      - .github/workflows/fork-portable-deploy-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'aristha/openproject'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bash syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n deploy/portable/deploy.sh
+          bash -n deploy/adapters/aws-s3-backup.sh
+          bash -n deploy/portable/test-deploy-mock.sh
+      - name: Validate optional backup calendar
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemd-analyze calendar 'Mon..Fri *-*-* 17:45:00 Asia/Ho_Chi_Minh'
+          grep -q '^Persistent=false$' deploy/systemd/betasoft-openproject-backup.timer
+          grep -q '^TimeoutStartSec=25min$' deploy/systemd/betasoft-openproject-backup.service
+      - name: Offline dry run and invalid input rejection
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          trap 'rm -rf "$test_root"' EXIT
+          printf 'services: {}\n' > "$test_root/compose.yaml"
+          digest="sha256:$(printf 'a%.0s' {1..64})"
+          DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --dry-run "ghcr.io/aristha/openproject@$digest"
+          if DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --dry-run 'ghcr.io/aristha/openproject:latest'; then
+            echo 'Mutable tag was unexpectedly accepted' >&2
+            exit 1
+          fi
+          if DEPLOY_ROOT="$test_root" bash deploy/portable/deploy.sh --execute "ghcr.io/aristha/openproject@$digest"; then
+            echo 'Unapproved execution was unexpectedly accepted' >&2
+            exit 1
+          fi
+          echo "Offline portable deploy checks passed."
+      - name: Mock deploy safety and rollback tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash deploy/portable/test-deploy-mock.sh
+      - name: Verify release bundle metadata and checksum negative tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s deploy/portable -p 'test_verify_release.py' -v

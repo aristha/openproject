@@ -1,0 +1,75 @@
+name: Fork / Prepare portable release
+
+"on":
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Approved release channel (host deployments remain manual)"
+        required: true
+        type: choice
+        options:
+          - pilot
+          - staging
+          - production
+      image_digest:
+        description: "sha256:<64hex> from successful GHCR build"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openproject-release-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'aristha/openproject' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout exact reviewed revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate digest and portable scripts
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          RELEASE_ENV: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          bash -n deploy/portable/deploy.sh
+          bash -n deploy/adapters/aws-s3-backup.sh
+          test -f deploy/portable/deploy.sh
+          mkdir -p dist
+          python3 - <<'PY'
+          import json, os, pathlib
+          data = {
+            "schema_version": 1,
+            "environment": os.environ["RELEASE_ENV"],
+            "image": "ghcr.io/aristha/openproject@" + os.environ["IMAGE_DIGEST"],
+            "source_sha": os.environ["GITHUB_SHA"],
+            "deployment_mode": "manual-on-host",
+            "migrations": "not-performed",
+          }
+          pathlib.Path("dist/release.json").write_text(json.dumps(data, indent=2) + "\n")
+          PY
+          cp deploy/portable/deploy.sh dist/deploy.sh
+          cp deploy/adapters/aws-s3-backup.sh dist/aws-s3-backup.sh
+          cp deploy/systemd/betasoft-openproject-backup.service dist/
+          cp deploy/systemd/betasoft-openproject-backup.timer dist/
+          (cd dist && sha256sum release.json deploy.sh aws-s3-backup.sh betasoft-openproject-backup.service betasoft-openproject-backup.timer > SHA256SUMS)
+          python3 deploy/portable/verify_release.py dist
+          cat dist/release.json >> "$GITHUB_STEP_SUMMARY"
+          echo "Release bundle prepared only; NOTHING deployed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload portable release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: openproject-${{ inputs.environment }}-${{ github.run_number }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30

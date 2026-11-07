@@ -1,0 +1,11 @@
+[Unit]
+Description=Beta Soft OpenProject pre-shutdown S3 backup on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 17:45:00 Asia/Ho_Chi_Minh
+AccuracySec=1min
+Persistent=false
+Unit=betasoft-openproject-backup.service
+
+[Install]
+WantedBy=timers.target
