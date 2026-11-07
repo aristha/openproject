@@ -59,3 +59,8 @@ jobs:
         run: |
           set -euo pipefail
           bash deploy/portable/test-deploy-mock.sh
+      - name: Verify release bundle metadata and checksum negative tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s deploy/portable -p 'test_verify_release.py' -v
