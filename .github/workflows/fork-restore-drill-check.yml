@@ -95,6 +95,15 @@ jobs:
             echo 'S3 mismatch was not rejected' >&2
             exit 1
           fi
+      - name: Reject a backup lacking required OpenProject tables in real-backup mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if RESTORE_EXPECT_APP_SCHEMA=1 bash deploy/recovery/isolated-restore-drill.sh \
+            "$RUNNER_TEMP/test-backup"; then
+            echo 'Missing OpenProject core tables were not rejected' >&2
+            exit 1
+          fi
       - name: Reject modified backups
         shell: bash
         run: |
