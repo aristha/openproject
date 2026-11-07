@@ -77,3 +77,61 @@ A structural restore alone does not close Issue #5. If pg_restore fails because
 the disposable PostgreSQL image lacks required extensions, record the exact
 extension and use a version-compatible test image rather than suppressing the
 error or changing production.
+
+## Pilot historical backup: verify S3 against retained originals
+
+The initial backup was captured at `/var/backups/openproject/20261107T131904Z`
+and uploaded to
+`s3://betasoft-openproject-backups-080891697921-ap-southeast-2-an/manual/20261107T131904Z/`.
+
+If the **original local directory still exists** and has not been modified, the
+following wrapper compares each remote file with its original using SHA256.
+Only when hashes match will it generate a temporary manifest and attempt the
+isolated structural restore. No upload, production DB connection, or production
+volume change is performed. This relies on the retained local original as the
+integrity baseline; independently preserve that evidence.
+
+Run only during an approved maintenance window and ideally on a disposable
+copy of the VM; Docker still consumes CPU, memory and disk on the execution
+host. The initial production host has limited memory, so measure capacity first.
+
+```bash
+# Confirm file existence, sizes and current EC2 resource headroom.
+sudo ls -lh /var/backups/openproject/20261107T131904Z/{database.dump,assets.tar.gz}
+free -h
+df -h /
+
+# After obtaining this PR at a reviewed commit, run both scripts from a
+# trusted read-only directory; adjust to absolute file paths:
+sudo bash /absolute/path/verify-s3-manual-backup.sh \
+  s3://betasoft-openproject-backups-080891697921-ap-southeast-2-an/manual/20261107T131904Z \
+  /var/backups/openproject/20261107T131904Z \
+  /absolute/path/isolated-restore-drill.sh
+```
+
+Capture **only** the redacted terminal lines
+`S3_OBJECT_MATCH`, `S3_COMPARE_PASS`, and `RESTORE_DRILL_PASS` in Issue #5.
+Do not paste passwords, access tokens, complete dump data, or attachment
+contents. If local original missing, do not fabricate a trusted manifest;
+obtain a fresh backup with recorded hashes and verify its origin.
+
+The wrapper reads from S3 using the instance's existing role. If an S3 policy
+does not permit GetObject, fix the policy through the authorized IAM flow;
+do not embed credentials in the script.
+
+### Additional application-level validation (still required)
+
+Structural restore does not verify usability. Run a complete **isolated**
+OpenProject instance with a restored database and attachment directory,
+carrying over the original runtime encryption key from a secure channel.
+Prove the following with non-sensitive evidence:
+
+- Users and project counts agree with the source before cutover.
+- A representative work package is visible.
+- A representative attachment is downloadable and the byte hash matches.
+- Worker starts and health checks pass without operating against live DB.
+- A separate simulated failure can be reversed with the written recovery steps.
+
+**Do not close Issue #5** until these checks, scheduled backup execution,
+S3 controls and RPO/RTO are recorded; CI synthetic restore only validates
+the tool, not the production backup.
