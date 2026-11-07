@@ -43,7 +43,7 @@ backup scripts, configure:
 chmod 700 ./aws-s3-backup.sh
 export DEPLOY_ROOT=/opt/openproject-pilot
 export DEPLOY_HOST=projects.betajapansoftware.com
-export DEPLOY_HEALTH_URL=http://127.0.0.1:8080/health_checks/default
+export DEPLOY_HEALTH_URL=http://127.0.0.1:8080/health_check
 export DEPLOY_BACKUP_HOOK="$(pwd)/aws-s3-backup.sh"
 export S3_BACKUP_BUCKET=betasoft-openproject-backups-080891697921-ap-southeast-2-an
 export AWS_REGION=ap-southeast-2
