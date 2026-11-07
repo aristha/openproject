@@ -126,3 +126,52 @@ and deployed from each host via existing access (SSM or console).
 GitHub release bundle preparation does not claim the supplied image digest was
 cryptographically verified against GHCR or CI provenance; operators must
 check the build and image digest before promotion.
+
+## Optional weekday AWS backup timer (not installed automatically)
+
+The templates in `deploy/systemd/` schedule an S3 backup at **17:45
+Asia/Ho_Chi_Minh Monday–Friday**, before the intended 18:30 EC2 stop. The
+service has a 25-minute timeout and does **not** start a stopped EC2 instance.
+`Persistent=false` prevents catch-up jobs after a machine was offline.
+
+This is an **optional AWS adapter**, not part of the cloud-neutral runtime.
+Inspect and adapt paths before installation. The AWS S3 backup script
+`deploy/adapters/aws-s3-backup.sh` assumes the existing backup IAM role and
+PostgreSQL/attachments Compose layout.
+
+On the EC2 **only after operator review**, install the files using the trusted
+release bundle or a pinned repository commit:
+
+```bash
+sudo install -D -m 0750 deploy/adapters/aws-s3-backup.sh \
+  /usr/local/libexec/betasoft-aws-s3-backup.sh
+sudo install -D -m 0644 deploy/systemd/betasoft-openproject-backup.service \
+  /etc/systemd/system/betasoft-openproject-backup.service
+sudo install -D -m 0644 deploy/systemd/betasoft-openproject-backup.timer \
+  /etc/systemd/system/betasoft-openproject-backup.timer
+sudo install -d -m 0700 /etc/betasoft
+printf 'S3_BACKUP_BUCKET=%s\n' \
+  'betasoft-openproject-backups-080891697921-ap-southeast-2-an' \
+  | sudo tee /etc/betasoft/openproject-backup.env >/dev/null
+sudo chmod 0600 /etc/betasoft/openproject-backup.env
+sudo systemd-analyze calendar 'Mon..Fri *-*-* 17:45:00 Asia/Ho_Chi_Minh'
+sudo systemctl daemon-reload
+sudo systemctl enable --now betasoft-openproject-backup.timer
+sudo systemctl list-timers betasoft-openproject-backup.timer
+```
+
+Test it manually during a planned maintenance window with
+`sudo systemctl start betasoft-openproject-backup.service`, inspect
+`sudo journalctl -u betasoft-openproject-backup.service --no-pager -n 80`,
+then check all uploaded object sizes, checksum manifest and bucket permissions.
+
+**Consistency warning:** A live PostgreSQL logical dump plus a separate live
+attachments tarball is *not* an atomic DB/files snapshot. A fully consistent
+backup for changes involving uploads must be taken during an application
+maintenance/write-quiesced window. Do not close recovery issue #5 until
+database and assets are actually restored and verified on an isolated host.
+Set up backup freshness alarms and S3 retention separately.
+
+If the EC2 Stop schedule is wrong, enabling this timer does not fix it. Verify
+EventBridge Start/Stop independently. Do not enable the timer on future
+non-AWS hosts without replacing the backup adapter.
