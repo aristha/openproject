@@ -1,0 +1,133 @@
+---
+# yamllint disable rule:key-ordering
+name: Fork / Build slim image to GHCR
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ghcr-slim-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish the fork's slim image
+    if: github.repository == 'aristha/openproject' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write # Publish and inspect this repository's GHCR image.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout the dispatched commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set commit-only image reference
+        id: image
+        run: |
+          set -euo pipefail
+          repository="${GITHUB_REPOSITORY,,}"
+          tag="sha-${GITHUB_SHA}"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "reference=ghcr.io/$repository:$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to overwrite an existing SHA tag
+        id: existing
+        env:
+          GHCR_REPOSITORY: ${{ steps.image.outputs.repository }}
+          GHCR_TAG: ${{ steps.image.outputs.tag }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/ghcr-image.py check
+
+      - name: Record standard runner resources
+        if: steps.existing.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          nproc
+          free -h
+          df -h / /var/lib/docker
+          docker system df
+          test "$(df --output=avail -B1 / | tail -1)" -ge 12884901888 || {
+            echo '::error::Less than 12 GiB free; stop before building. See the runbook.'
+            exit 1
+          }
+
+      - name: Set up a bounded BuildKit builder
+        if: steps.existing.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 2
+
+      - name: Check production Dockerfile
+        if: steps.existing.outputs.exists == 'false'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/prod/Dockerfile
+          target: slim
+          platforms: linux/amd64
+          call: check
+
+      - name: Log in to GHCR
+        if: steps.existing.outputs.exists == 'false'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish the production slim image
+        if: steps.existing.outputs.exists == 'false'
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/prod/Dockerfile
+          target: slim
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.reference }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: mode=min
+
+      - name: Verify published digest and report registry size
+        if: steps.existing.outputs.exists == 'true' || steps.build.outcome == 'success'
+        env:
+          GHCR_REPOSITORY: ${{ steps.image.outputs.repository }}
+          GHCR_TAG: ${{ steps.image.outputs.tag }}
+          GHCR_DIGEST: ${{ steps.build.outputs.digest || steps.existing.outputs.digest }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/ghcr-image.py report
+
+      - name: Record result and final resources
+        if: always()
+        env:
+          IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
+          BUILD_RESULT: ${{ steps.build.outcome }}
+          REUSED: ${{ steps.existing.outputs.exists }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "### Build result"
+            echo "- Image: $IMAGE_REFERENCE"
+            echo "- Build step: $BUILD_RESULT; existing tag reused: $REUSED"
+            echo "- Job status before this diagnostic step: $JOB_STATUS"
+            echo '- Source: docker/prod/Dockerfile; target: slim; platform: linux/amd64'
+            echo '- On failure, inspect the failing step and resource logs; no paid-runner fallback is configured.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          free -h
+          df -h / /var/lib/docker
+          docker system df
