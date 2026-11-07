@@ -39,4 +39,4 @@ done
 # This does not prove authenticity if the original itself was compromised.
 (cd "$WORK" && sha256sum database.dump assets.tar.gz > SHA256SUMS)
 echo "S3_COMPARE_PASS: downloaded files match the retained local originals"
-bash "$DRILL" "$WORK"
+RESTORE_EXPECT_APP_SCHEMA=1 bash "$DRILL" "$WORK"
