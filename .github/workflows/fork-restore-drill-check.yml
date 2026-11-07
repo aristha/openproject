@@ -1,0 +1,91 @@
+name: Fork / Isolated restore drill checks
+
+"on":
+  pull_request:
+    paths:
+      - deploy/recovery/**
+      - docs/operations/betasoft-restore-drill.md
+      - .github/workflows/fork-restore-drill-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore-drill:
+    if: github.repository == 'aristha/openproject'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check script syntax and runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n deploy/recovery/isolated-restore-drill.sh
+          python3 --version
+          docker --version
+      - name: Generate synthetic database and attachment backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/test-backup" "$RUNNER_TEMP/assets"
+          echo "synthetic, non-sensitive sample" > "$RUNNER_TEMP/assets/sample.txt"
+          tar -czf "$RUNNER_TEMP/test-backup/assets.tar.gz" -C "$RUNNER_TEMP/assets" .
+          docker run -d --name op-restore-source --network none \
+            -e POSTGRES_HOST_AUTH_METHOD=trust postgres:17 \
+            -c shared_buffers=64MB -c max_connections=20
+          trap 'docker rm -f -v op-restore-source || true' EXIT
+          ready=no
+          for n in $(seq 1 30); do
+            if docker exec op-restore-source pg_isready -U postgres >/dev/null 2>&1; then ready=yes; break; fi
+            sleep 2
+          done
+          test "$ready" = yes
+          docker exec op-restore-source psql -U postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE TABLE public.pilot_restore_test (id integer primary key, note text);"
+          docker exec op-restore-source psql -U postgres -v ON_ERROR_STOP=1 \
+            -c "INSERT INTO public.pilot_restore_test VALUES (1, 'test');"
+          docker exec op-restore-source pg_dump -U postgres -Fc --no-owner --no-acl \
+            postgres > "$RUNNER_TEMP/test-backup/database.dump"
+          (cd "$RUNNER_TEMP/test-backup" && sha256sum database.dump assets.tar.gz > SHA256SUMS)
+      - name: Prove isolated restore succeeds with synthetic data
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash deploy/recovery/isolated-restore-drill.sh "$RUNNER_TEMP/test-backup" |
+            tee "$RUNNER_TEMP/restore-result.txt"
+          grep -q "RESTORE_DRILL_PASS:" "$RUNNER_TEMP/restore-result.txt"
+      - name: Reject modified backups
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'corrupted\n' >> "$RUNNER_TEMP/test-backup/assets.tar.gz"
+          if bash deploy/recovery/isolated-restore-drill.sh "$RUNNER_TEMP/test-backup"; then
+            echo "Corrupted backup unexpectedly passed" >&2
+            exit 1
+          fi
+      - name: Reject traversal archive even with matching manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import io
+          import os
+          import pathlib
+          import tarfile
+          folder = pathlib.Path(os.environ["RUNNER_TEMP"]) / "test-backup"
+          with tarfile.open(folder / "assets.tar.gz", "w:gz") as archive:
+              data = b"unsafe"
+              item = tarfile.TarInfo("../escape.txt")
+              item.size = len(data)
+              archive.addfile(item, io.BytesIO(data))
+          PY
+          (cd "$RUNNER_TEMP/test-backup" && sha256sum database.dump assets.tar.gz > SHA256SUMS)
+          if bash deploy/recovery/isolated-restore-drill.sh "$RUNNER_TEMP/test-backup"; then
+            echo "Traversal archive unexpectedly passed" >&2
+            exit 1
+          fi
