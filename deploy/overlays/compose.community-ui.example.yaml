@@ -1,0 +1,18 @@
+# Optional runtime overlay for the Beta Soft Community pilot.
+# Apply ONLY after verifying the running OpenProject image supports these settings.
+# THIS DOES NOT remove Enterprise code or alter license enforcement.
+#
+# docker compose -f compose.yaml -f compose.community-ui.yaml config --quiet
+# docker compose -f compose.yaml -f compose.community-ui.yaml up -d --no-deps web worker
+#
+# Review any existing compose.deploy.yaml override and combine all overlays in
+# the correct order; do not accidentally revert an image deployment.
+services:
+  web:
+    environment:
+      OPENPROJECT_EE__HIDE__BANNERS: "true"
+      OPENPROJECT_EE__MANAGER__VISIBLE: "false"
+  worker:
+    environment:
+      OPENPROJECT_EE__HIDE__BANNERS: "true"
+      OPENPROJECT_EE__MANAGER__VISIBLE: "false"
