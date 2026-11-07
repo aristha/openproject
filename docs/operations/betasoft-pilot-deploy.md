@@ -1,98 +1,128 @@
-# Beta Soft OpenProject: pilot deployment via GitHub Actions
+# Beta Soft OpenProject — portable CI/CD and multi-host deployment
 
-## Scope and safety
+## Scope
 
-This is a **manual, pilot-only** deployment workflow. Nothing deploys on PR or merge. The
-existing GHCR build workflow is unchanged. Initial runs must use **dry_run=true**.
-The workflow requires branch dev, a human confirmation string for real deployments,
-and an optional GitHub Environment approval policy.
+Provider-neutral application delivery to **AWS EC2, a VPS, another AWS account,
+or other Linux VMs** with Docker Compose. The existing GHCR build workflow remains
+unchanged and is responsible for building and scanning the immutable image.
 
-**Not yet production-certified:** A database restore exercise, runtime SSM/OIDC
-connectivity test, and GHCR image lifecycle/security review are required before
-enabling real deployment. This code deliberately does **not** run database migrations
-or seeds. If a release needs migrations, DO NOT run this workflow until a separate,
-reviewed migration/rollback procedure exists.
+The new workflow `Fork / Prepare portable release` runs manually on `dev`, accepts
+a previously reviewed GHCR image SHA256 digest, selects one of `pilot`, `staging`,
+or `production`, and uploads a release bundle with the image reference and
+deployment scripts. It **does not** connect to any host, perform an AWS operation,
+or change production. The GitHub Environment provides an optional approval gate
+depending on repository settings and available plan features. Protect the release
+workflow and target environments.
 
-## GitHub environment: pilot
+This is a *release-preparation* pipeline, **not yet unattended CD**. Automatic
+promotion by a host-side agent is a separate phase, after backup restore drills,
+image authenticity verification, and deployment approval controls.
 
-Create a GitHub Actions Environment called pilot. Configure reviewer approval if
-your GitHub plan and repository visibility support it; do not assume approvals
-are enforced without verifying the UI. Set these environment variables:
+## Portable execution on any Linux host
 
-- AWS_DEPLOY_ROLE_ARN: AWS OIDC role ARN for this deployment environment.
-- EC2_INSTANCE_ID: instance ID (pilot: i-0e813ed245633d925).
-- S3_BACKUP_BUCKET: bucket name (pilot:
-  betasoft-openproject-backups-080891697921-ap-southeast-2-an).
+Prerequisites: Docker Engine + Docker Compose plugin, bash, curl, flock, the
+application's `compose.yaml`, running PostgreSQL, a verified secure backup hook,
+and authenticated access to the image registry when GHCR is private.
 
-No AWS long-lived access keys, SSH private keys, PostgreSQL passwords or
-Cloudflare tokens belong in GitHub Actions.
+The host deployment command should run only from a trusted, verified bundle,
+not an arbitrary script downloaded from an untrusted URL. Review its SHA256SUMS
+and source commit. Place the files in a protected directory with restricted
+permissions. Never execute unreviewed PR artifacts as root.
 
-### IAM prerequisite (in each target AWS account)
+First test without modifying anything:
 
-1. Create GitHub OIDC identity provider for token.actions.githubusercontent.com,
-   audience sts.amazonaws.com, according to current AWS/GitHub documentation.
-2. Create a GitHub Actions role with sts:AssumeRoleWithWebIdentity. Restrict
-   token.actions.githubusercontent.com:aud to sts.amazonaws.com and sub to the
-   exact repository/environment identity. For older repository OIDC subject
-   formats the sub is typically repo:aristha/openproject:environment:pilot;
-   **inspect the real token claim** and account for newer organization/repository
-   immutable-ID claim conventions. Do not use wildcard repository trust.
-3. Grant this GitHub role only ec2:DescribeInstances for verification,
-   ssm:SendCommand scoped to the exact EC2 instance and the AWS-RunShellScript
-   document, and ssm:GetCommandInvocation. CloudTrail records the action.
-4. The EC2 instance profile must separately include AmazonSSMManagedInstanceCore
-   plus its existing minimal S3 backup permissions (ListBucket, PutObject,
-   GetObject). SSM Agent must be online. Use SSM managed node check before
-   real deployment. Confirm S3 prefix write works. Never replace the
-   backup role with an unrelated role.
-5. AWS target region is ap-southeast-2 for this pilot. Multi-account migration
-   changes environment variables and IAM/SSM setup, not the GitHub repo and GHCR
-   image. If the future account uses another region, parameterize and review
-   region constraints first.
+```bash
+DEPLOY_ROOT=/opt/openproject-pilot \
+  bash ./deploy.sh --dry-run ghcr.io/aristha/openproject@sha256:<64-hex-digest>
+```
 
-### Manual run
+For the AWS pilot, after reviewing release compatibility, **restore testing** and
+backup scripts, configure:
 
-1. Confirm the GHCR **digest** comes from a successful, fully scanned
-   Fork / Build slim image to GHCR run.
-2. Run the workflow on dev with image_digest = sha256:<64 hex> and dry_run=true.
-3. Check script validation result, then establish OIDC/SSM and restore test.
-4. Confirm app/database changes have **no schema migration requirement**.
-5. For authorized pilot test only: use dry_run=false and confirmation =
-   DEPLOY_NO_MIGRATIONS. Check SSM command output and post-deploy user flow.
+```bash
+chmod 700 ./aws-s3-backup.sh
+export DEPLOY_ROOT=/opt/openproject-pilot
+export DEPLOY_HOST=projects.betajapansoftware.com
+export DEPLOY_HEALTH_URL=http://127.0.0.1:8080/health_checks/default
+export DEPLOY_BACKUP_HOOK="$(pwd)/aws-s3-backup.sh"
+export S3_BACKUP_BUCKET=betasoft-openproject-backups-080891697921-ap-southeast-2-an
+export AWS_REGION=ap-southeast-2
+export DEPLOY_SCHEMA_APPROVED=NO_MIGRATIONS
+sudo --preserve-env=DEPLOY_ROOT,DEPLOY_HOST,DEPLOY_HEALTH_URL,DEPLOY_BACKUP_HOOK,S3_BACKUP_BUCKET,AWS_REGION,DEPLOY_SCHEMA_APPROVED \
+  bash ./deploy.sh --execute ghcr.io/aristha/openproject@sha256:<64-hex-digest>
+```
 
-Deployment checks EC2 state and refuses to start a stopped machine (to avoid
-unscheduled charges). It backs up pg_dump and attachments to S3, changes only
-web/worker Docker image through compose.deploy.yaml, then checks HTTP health.
-On failure it attempts **image-only rollback**. Rollback does NOT restore the
-database; DB and attachments consistency is not guaranteed while users upload
-files. For data-affecting releases schedule a maintenance window with writes
-disabled, verified backup and an independently tested recovery plan.
+**Never use the placeholder digest literally.** Use only a successful, approved
+GHCR build digest. Verify that the currently deployed image and candidate are
+schema-compatible. If a release requires database migrations, do not use this
+script as-is; develop migration and rollback procedures first.
 
-IMPORTANT: When using the host manually, always run
-  docker compose -f compose.yaml -f compose.deploy.yaml ...
-after deployment. Plain docker compose up without the override may revert
-web/worker to the image hardcoded in compose.yaml.
+For another provider, replace only `DEPLOY_BACKUP_HOOK` with an executable
+script that produces and verifies an off-host, restorable database and attachment
+backup. Do not pass database passwords, access keys, or tunnel credentials into
+GitHub Actions. Secure backups and encryption policy remain operator duties.
 
-## EC2 backup/recovery controls
+On-host deploy enforces an immutable GHCR digest, a single-deploy lock, running
+database, required backup hook, local HTTP check, and Web/Worker running status.
+It only changes their Docker Compose image override. On deployment failure it
+attempts image-only rollback, **not database recovery**. Restore tests and a
+maintenance window are necessary to protect consistency between PostgreSQL and
+attachments. Backup size checks and SHA256 are **not** a restore test.
 
-- The manual backup created at S3 manual/20261107T131904Z contains database.dump
-  and assets.tar.gz but a full restore rehearsal has NOT been established.
-- No .env or credentials are uploaded by the deployment script.
-- Preserve SECRET_KEY_BASE separately in a secure password/secrets manager and
-  preserve encrypted backup of runtime config. The current pilot .env includes
-  database password and Cloudflare Tunnel token.
-- Enable S3 bucket public access block, SSE-S3, versioning and a lifecycle policy.
-  Confirm the actual S3 bucket permissions and versioning in AWS.
-- Keep enough EBS free space and set CloudWatch alarm thresholds.
-- Backups from running DB and running attachment volume are not atomic;
-  planned migration requires transactional/maintenance procedures.
+Note: the AWS adapter requires Docker pull permission for `alpine:3.21`, the
+AWS CLI, and an EC2 instance role able to write the backup bucket. It verifies
+S3 uploaded object byte lengths. Use a maintenance window if users might upload
+attachments during the backup.
 
-## Future AWS account migration
+All subsequent Docker Compose commands on the host must include the overlay:
 
-Provision a new Ubuntu EC2 and Docker Compose with PostgreSQL and assets volumes,
-SSM Agent and instance profile; re-create S3, CloudWatch, EventBridge schedules
-and the Cloudflare Tunnel connector. Restore verified DB and assets under
-maintenance, and preserve production secrets. Point the Cloudflare public hostname
-to the tested new origin, validate login/work packages, then retire old EC2 only
-after a defined rollback window. Infrastructure-as-code for these resources is
-a separate follow-up and is not claimed to be implemented by this PR.
+```bash
+docker compose -f compose.yaml -f compose.deploy.yaml ps
+```
+
+Do not `docker compose up -d` without the overlay after a successful deployment
+unless intentionally reverting to the base compose image.
+
+## Multi-host / multi-cloud design
+
+- **Build once**: GHCR OCI image pinned by sha256 is independent of AWS account.
+- **Promote by environment**: separate GitHub release bundles for pilot,
+  staging, production. A production rollout requires its own approval.
+- **Deploy on each host**: local script with a provider-specific backup hook.
+  No inbound SSH and no GitHub cloud credentials are needed for manual mode.
+- **Configure externally**: hostnames, secrets, persistent volumes, TLS route,
+  database credentials, ports, S3/bucket, uptime schedule, and monitoring remain
+  host/provider configuration.
+- **Preserve state**: PostgreSQL + OpenProject attachments + SECRET_KEY_BASE.
+  A Docker image is not a data migration.
+- **Scale topology**: this script is designed for a **single Docker Compose
+  installation**. Running multiple replicas against one DB requires shared
+  attachment storage, singleton scheduler/worker architecture, database
+  capacity checks, and an HA migration design. It is NOT implemented here.
+- **Future AWS account**: re-provision IAM/SSM, volumes, private networking,
+  S3 backup and Cloudflare routing in the destination account; restore and
+  test before switching traffic. No GitHub OIDC needed for the manual mode.
+
+## Remaining release gates
+
+- [ ] Validate base Compose service/volume names and health endpoint on pilot.
+- [ ] Demonstrate backup restoration on a separate PostgreSQL and assets volume.
+- [ ] Confirm secure image-pull authentication if GHCR visibility changes.
+- [ ] Run release workflow with a known digest and inspect uploaded artifact.
+- [ ] Dry-run on the pilot host, no production changes.
+- [ ] Review app migrations and arrange maintenance window.
+- [ ] Test rollback for image-only deployment and alerts.
+- [ ] Add automated host-side reconciliation only after production controls.
+- [ ] Add Terraform/OpenTofu provider-specific infrastructure as separate PR.
+
+## Security decisions
+
+The AWS Free Plan has an explicit SCP deny on IAM GetOpenIDConnectProvider.
+Do not attempt to bypass it. This PR intentionally removes the direct
+GitHub-OIDC-to-SSM workflow; it does **not** use long-lived AWS keys or SSH
+secrets in GitHub. Release bundles may be downloaded by authorized operators
+and deployed from each host via existing access (SSM or console).
+
+GitHub release bundle preparation does not claim the supplied image digest was
+cryptographically verified against GHCR or CI provenance; operators must
+check the build and image digest before promotion.
