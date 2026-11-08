@@ -54,3 +54,23 @@ actual registry policies independently.
 
 **Do not** run the Phase-4 build automatically, approve new image digests
 without human review, schedule the host agent, or enable unattended deploy.
+
+## GitHub runner vs production Cosign executable (fix)
+
+The `sigstore/cosign-installer` action installs Cosign into the GitHub
+runner's tool directory (default under `$HOME/.cosign`), which is added
+to `PATH`; it does not guarantee `/usr/local/bin/cosign`.
+The manual read-only acceptance job now resolves `cosign` with
+`shutil.which` and explicitly passes its absolute path to the verifier,
+while retaining runner `HOME`/`DOCKER_CONFIG` required by the earlier
+`docker/login-action` GHCR authentication.
+
+The host-side release agent retains a separate default:
+`/usr/local/bin/cosign`, root-owned and reviewable, with a restricted
+`HOME=/root` verification process. A registry artifact or control file
+cannot select an arbitrary executable path.
+
+This change fixes a runtime compatibility issue **without dispatching**
+the manual registry verification workflow. Real GHCR signature acceptance
+remains outstanding until an authorized operator supplies a reviewed
+candidate image digest and image-build SHA and runs the workflow.
