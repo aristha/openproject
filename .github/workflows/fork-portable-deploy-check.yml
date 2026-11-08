@@ -65,6 +65,14 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s deploy/portable -p 'test_verify_release.py' -v
+      - name: Test Phase 2 authenticated transport fail-closed gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile deploy/agent/release_transport.py deploy/agent/test_release_transport.py
+          python3 -m unittest discover -s deploy/agent -p 'test_release_transport.py' -v
+          grep -q 'NoNewPrivileges=true' deploy/agent/systemd/betasoft-release-transport.service
+          ! grep -q -- '--stage' deploy/agent/systemd/betasoft-release-transport.service
       - name: Test approved release agent fail-closed gates
         shell: bash
         run: |
