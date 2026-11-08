@@ -1,4 +1,5 @@
 """Offline negative tests for HTTPS alert delivery, retries and idempotency."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -46,7 +47,10 @@ class AlertTests(unittest.TestCase):
             def pretend_root(fd):
                 st = original(fd)
                 return mock.Mock(st_mode=st.st_mode, st_uid=0)
-            with mock.patch.object(alerts.os, "fstat", side_effect=pretend_root):
+            with mock.patch.object(alerts.os, "fstat", side_effect=pretend_root), \
+                 mock.patch.object(alerts, "safe_alert",
+                                   side_effect=lambda p: (json.loads(p.read_text()),
+                                       hashlib.sha256(p.read_bytes()).hexdigest())):
                 return alerts.run(self.args, sender=sender, sleeper=sleeper)
 
     def test_success_archives_once(self):
