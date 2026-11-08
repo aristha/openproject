@@ -34,41 +34,58 @@ class RegistryAcceptanceTests(unittest.TestCase):
 
     def runner(self, command, **kwargs):
         self.calls.append(command)
+        self.assertEqual(command[0], "/home/runner/.cosign/cosign")
+        self.assertEqual(kwargs["env"].get("HOME"), "/home/runner")
         identity = command[command.index("--certificate-identity") + 1]
         return mock.Mock(returncode=0 if identity == IDENTITY and
                          command[-1] == IMAGE_NAME + self.digest else 1,
                          stdout=self.stdout)
 
-    def test_positive_and_three_negative_gates(self):
+    @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
+    @mock.patch.dict("accept_signed_ghcr_candidate.os.environ", {"HOME": "/home/runner", "DOCKER_CONFIG": "/home/runner/.docker"})
+    def test_positive_and_three_negative_gates(self, _binary):
         self.assertTrue(run_acceptance(self.digest, self.source, runner=self.runner))
         self.assertEqual(len(self.calls), 4)
         self.assertTrue(all("--certificate-identity" in c for c in self.calls))
         self.assertTrue(all("--certificate-oidc-issuer" in c for c in self.calls))
         self.assertTrue(all("--insecure-ignore-tlog" not in c for c in self.calls))
 
-    def test_forged_source_sha_fails(self):
+    @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
+    @mock.patch.dict("accept_signed_ghcr_candidate.os.environ", {"HOME": "/home/runner", "DOCKER_CONFIG": "/home/runner/.docker"})
+    def test_forged_source_sha_fails(self, _binary):
         with self.assertRaises(ProvenanceError):
             run_acceptance(self.digest, "c" * 40, runner=self.runner)
 
-    def test_unsigned_registry_response_fails(self):
+    @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
+    @mock.patch.dict("accept_signed_ghcr_candidate.os.environ", {"HOME": "/home/runner", "DOCKER_CONFIG": "/home/runner/.docker"})
+    def test_unsigned_registry_response_fails(self, _binary):
         def fail(*args, **kwargs):
             return mock.Mock(returncode=1, stdout=self.stdout)
         with self.assertRaises(ProvenanceError):
             run_acceptance(self.digest, self.source, runner=fail)
 
-    def test_wrong_signer_accepted_is_failure(self):
+    @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
+    @mock.patch.dict("accept_signed_ghcr_candidate.os.environ", {"HOME": "/home/runner", "DOCKER_CONFIG": "/home/runner/.docker"})
+    def test_wrong_signer_accepted_is_failure(self, _binary):
         def all_good(*args, **kwargs):
             return mock.Mock(returncode=0, stdout=self.stdout)
         with self.assertRaisesRegex(ProvenanceError, "signer identity"):
             run_acceptance(self.digest, self.source, runner=all_good)
 
-    def test_wrong_digest_accepted_is_failure(self):
+    @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
+    @mock.patch.dict("accept_signed_ghcr_candidate.os.environ", {"HOME": "/home/runner", "DOCKER_CONFIG": "/home/runner/.docker"})
+    def test_wrong_digest_accepted_is_failure(self, _binary):
         def digest_bug(command, **kwargs):
             identity = command[command.index("--certificate-identity") + 1]
             return mock.Mock(returncode=0 if identity == IDENTITY else 1,
                              stdout=self.stdout)
         with self.assertRaisesRegex(ProvenanceError, "image digest"):
             run_acceptance(self.digest, self.source, runner=digest_bug)
+
+    @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value=None)
+    def test_missing_runner_binary_fails_closed(self, _binary):
+        with self.assertRaisesRegex(ProvenanceError, "executable unavailable"):
+            run_acceptance(self.digest, self.source, runner=self.runner)
 
     def test_reject_mutable_tag(self):
         with self.assertRaises(ProvenanceError):
