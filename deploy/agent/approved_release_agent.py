@@ -201,7 +201,7 @@ def run(args):
                 with os.fdopen(fd, "w", encoding="utf-8") as state_out:
                     os.fchmod(state_out.fileno(), 0o600)
                     json.dump(record, state_out, indent=2)
-                    state_out.write("\\n")
+                    state_out.write("\n")
                     state_out.flush()
                     os.fsync(state_out.fileno())
                 os.replace(temp_path, state_file)
