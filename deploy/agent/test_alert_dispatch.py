@@ -37,13 +37,12 @@ class AlertTests(unittest.TestCase):
         }))
 
     def guarded(self, sender, sleeper=lambda n: None):
-        with mock.patch.object(alerts.os, "geteuid", return_value=0), \\
-             mock.patch.object(alerts, "require_root_owned_dir"), \\
+        with mock.patch.object(alerts.os, "geteuid", return_value=0), \
+             mock.patch.object(alerts, "require_root_owned_dir"), \
              mock.patch.object(alerts, "control_file", side_effect=[
-                 self.config.read_text(), "redacted-token"]), \\
-             mock.patch.object(alerts.os, "fstat", wraps=os.fstat):
+                 self.config.read_text(), "redacted-token"]):
             # CI runner owns temporary files; mock only the root-only file check.
-            original = alerts.os.fstat
+            original = os.fstat
             def pretend_root(fd):
                 st = original(fd)
                 return mock.Mock(st_mode=st.st_mode, st_uid=0)
