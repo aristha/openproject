@@ -119,6 +119,12 @@ def require_root_executable(path):
         reject("Backup hook must be a root-owned, non-writable executable regular file")
 
 
+def require_root_lock(fd):
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+        reject("Agent lock file must be root-only")
+
+
 def read_state(path):
     if not path.exists() and not path.is_symlink():
         return None
@@ -147,9 +153,7 @@ def run(args):
     lock_path = state_dir / "agent.lock"
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "a+") as lock:
-        lock_st = os.fstat(lock.fileno())
-        if not stat.S_ISREG(lock_st.st_mode) or lock_st.st_uid != 0 or lock_st.st_mode & 0o077:
-            reject("Agent lock file must be root-only")
+        require_root_lock(lock.fileno())
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with tempfile.TemporaryDirectory(prefix="openproject-agent-") as scratch:
             extracted = Path(scratch)
