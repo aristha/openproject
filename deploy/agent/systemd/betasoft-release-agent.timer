@@ -1,0 +1,12 @@
+[Unit]
+Description=BetaSoft OpenProject release reconciliation (weekday poll, observe-only)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* *:0/5:00 Asia/Ho_Chi_Minh
+AccuracySec=1min
+RandomizedDelaySec=30s
+Persistent=false
+Unit=betasoft-release-agent.service
+
+[Install]
+WantedBy=timers.target

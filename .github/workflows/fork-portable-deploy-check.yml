@@ -4,6 +4,7 @@ name: Fork / Portable deployment checks
   pull_request:
     paths:
       - deploy/**
+      - docs/operations/betasoft-approved-release-agent.md
       - docs/operations/betasoft-pilot-deploy.md
       - .github/workflows/fork-prepare-portable-release.yml
       - .github/workflows/fork-portable-deploy-check.yml
@@ -64,3 +65,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s deploy/portable -p 'test_verify_release.py' -v
+      - name: Test approved release agent fail-closed gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s deploy/agent -p 'test_approved_release_agent.py' -v
+          systemd-analyze calendar 'Mon..Fri *-*-* *:0/5:00 Asia/Ho_Chi_Minh'
+          grep -q '^Persistent=false$' deploy/agent/systemd/betasoft-release-agent.timer
+          ! grep -q -- '--execute' deploy/agent/systemd/betasoft-release-agent.service
