@@ -1,0 +1,56 @@
+name: Fork / Verify signed GHCR candidate (read-only manual)
+
+"on":
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: "Exact sha256:<64 lowercase hex> emitted by approved candidate build"
+        required: true
+        type: string
+      build_sha:
+        description: "Reviewed full 40-character Git commit used to build the image"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  accept-signed-candidate:
+    if: github.repository == 'aristha/openproject' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: pilot
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout source, not any caller-supplied ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run offline negative security tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s deploy/portable -p 'test_accept_signed_ghcr_candidate.py' -v
+      - name: Login with short-lived read-only GHCR credentials
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+      - name: Verify real GHCR image and deliberately reject invalid identities
+        shell: bash
+        env:
+          INPUT_IMAGE_DIGEST: ${{ inputs.image_digest }}
+          INPUT_BUILD_SHA: ${{ inputs.build_sha }}
+        run: |
+          set -euo pipefail
+          python3 deploy/portable/accept_signed_ghcr_candidate.py \
+            --image-digest "$INPUT_IMAGE_DIGEST" \
+            --build-sha "$INPUT_BUILD_SHA"
+          echo "Read-only Cosign acceptance succeeded: image digest, signed SLSA v1, source SHA and negative identity tests." >> "$GITHUB_STEP_SUMMARY"
+          echo "No GHCR image was pushed, no release approved, no EC2 access or deploy executed." >> "$GITHUB_STEP_SUMMARY"

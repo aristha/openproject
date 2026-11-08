@@ -8,6 +8,7 @@ name: Fork / Portable deployment checks
       - docs/operations/betasoft-pilot-deploy.md
       - .github/workflows/fork-prepare-portable-release.yml
       - .github/workflows/fork-build-attested-image.yml
+      - .github/workflows/fork-verify-attested-image.yml
       - docs/operations/betasoft-release-readiness-phase4.md
       - .github/workflows/fork-portable-deploy-check.yml
   workflow_dispatch:
@@ -67,6 +68,14 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s deploy/portable -p 'test_verify_release.py' -v
+      - name: Verify read-only online GHCR acceptance workflow contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile deploy/portable/accept_signed_ghcr_candidate.py deploy/portable/test_accept_signed_ghcr_candidate.py
+          python3 -m unittest discover -s deploy/portable -p 'test_accept_signed_ghcr_candidate.py' -v
+          grep -q 'workflow_dispatch:' .github/workflows/fork-verify-attested-image.yml
+          ! grep -q '^  push:' .github/workflows/fork-verify-attested-image.yml
       - name: Verify manual attested GHCR image build producer/consumer contract
         shell: bash
         run: |
