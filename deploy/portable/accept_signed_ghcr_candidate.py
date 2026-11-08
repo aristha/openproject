@@ -3,6 +3,8 @@
 import argparse
 import base64
 import json
+import os
+import shutil
 import re
 import subprocess
 import sys
@@ -37,24 +39,32 @@ def policy_for(digest, source):
 def run_acceptance(digest, source, *, runner=subprocess.run):
     policy = policy_for(digest, source)
     image = policy["image"]
+    # GitHub cosign-installer installs under runner HOME, not /usr/local/bin.
+    # Resolve only for the explicitly invoked read-only acceptance workflow.
+    binary = shutil.which("cosign")
+    if not binary or not os.path.isabs(binary):
+        raise ProvenanceError("Runner Cosign executable unavailable")
+    # Preserve the runner's GHCR Docker login. The host release agent still
+    # uses its own root-owned binary and isolated HOME by default.
+    environment = os.environ.copy()
     # Positive: Cosign verifies Fulcio identity, issuer, signed statement,
     # image digest and transparency log. Python validates the SLSA subject/SHA.
-    if verify_image(image, policy, runner=runner) is not True:
+    if verify_image(image, policy, runner=runner,
+                    cosign_binary=binary, subprocess_env=environment) is not True:
         raise ProvenanceError("Verified image did not meet acceptance contract")
 
     # Negative source SHA: a successful signature alone MUST NOT authorize an
     # image whose reviewed builder commit differs from the statement.
     wrong_source = ("0" if source[0] != "0" else "1") + source[1:]
     statement_command = [
-        "/usr/local/bin/cosign", "verify-attestation",
+        binary, "verify-attestation",
         "--type", "slsaprovenance1",
         "--certificate-identity", IDENTITY,
         "--certificate-oidc-issuer", ISSUER,
         "--output", "json", image,
     ]
     completed = runner(statement_command, capture_output=True, timeout=90,
-                       check=False, env={"PATH": "/usr/local/bin:/usr/bin:/bin",
-                                         "HOME": "/root", "LANG": "C.UTF-8"})
+                       check=False, env=environment)
     if completed.returncode != 0:
         raise ProvenanceError("Cannot re-verify signed statement for SHA negative test")
     wrong_policy = dict(policy, build_sha=wrong_source)
@@ -71,8 +81,7 @@ def run_acceptance(digest, source, *, runner=subprocess.run):
     wrong_signer = list(statement_command)
     wrong_signer[wrong_signer.index("--certificate-identity") + 1] = wrong_identity
     rejected = runner(wrong_signer, capture_output=True, timeout=90,
-                      check=False, env={"PATH": "/usr/local/bin:/usr/bin:/bin",
-                                        "HOME": "/root", "LANG": "C.UTF-8"})
+                      check=False, env=environment)
     if rejected.returncode == 0:
         raise ProvenanceError("Unexpected signer identity was accepted")
 
@@ -85,8 +94,7 @@ def run_acceptance(digest, source, *, runner=subprocess.run):
     wrong_image = list(statement_command)
     wrong_image[-1] = other_image
     rejected = runner(wrong_image, capture_output=True, timeout=90,
-                      check=False, env={"PATH": "/usr/local/bin:/usr/bin:/bin",
-                                        "HOME": "/root", "LANG": "C.UTF-8"})
+                      check=False, env=environment)
     if rejected.returncode == 0:
         raise ProvenanceError("Unexpected image digest was accepted")
 

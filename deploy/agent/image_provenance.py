@@ -107,11 +107,21 @@ def parse_verified_cosign(result, policy):
     raise ProvenanceError("No signed SLSA statement binds approved image and build SHA")
 
 
-def verify_image(image, policy, *, runner=subprocess.run):
+def verify_image(image, policy, *, runner=subprocess.run,
+                 cosign_binary="/usr/local/bin/cosign", subprocess_env=None):
+    # Host verification defaults to the reviewed fixed root-owned Cosign binary.
+    # GitHub acceptance may explicitly supply a resolved runner-installed binary
+    # and its Docker credential environment. Never take this path from a release.
+    if (not isinstance(cosign_binary, str) or not cosign_binary.startswith("/")
+            or "\\x00" in cosign_binary):
+        raise ProvenanceError("Cosign binary must be an absolute path")
+    if subprocess_env is None:
+        subprocess_env = {"PATH": "/usr/local/bin:/usr/bin:/bin",
+                          "HOME": "/root", "LANG": "C.UTF-8"}
     if image != policy["image"]:
         raise ProvenanceError("Approved image differs from image provenance policy")
     command = [
-        "/usr/local/bin/cosign", "verify-attestation",
+        cosign_binary, "verify-attestation",
         "--type", "slsaprovenance1",
         "--certificate-identity", policy["certificate_identity"],
         "--certificate-oidc-issuer", ISSUER,
@@ -120,8 +130,7 @@ def verify_image(image, policy, *, runner=subprocess.run):
     # Do not allow insecure-ignore-tlog, insecure-ignore-sct, --key, --check-claims=false.
     try:
         completed = runner(command, capture_output=True, timeout=90, check=False,
-                           env={"PATH": "/usr/local/bin:/usr/bin:/bin",
-                                "HOME": "/root", "LANG": "C.UTF-8"})
+                           env=subprocess_env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ProvenanceError("Cosign unavailable or timed out") from exc
     if completed.returncode != 0:
