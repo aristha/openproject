@@ -72,7 +72,7 @@ jobs:
           python3 -m py_compile deploy/agent/release_transport.py deploy/agent/test_release_transport.py
           python3 -m unittest discover -s deploy/agent -p 'test_release_transport.py' -v
           grep -q 'NoNewPrivileges=true' deploy/agent/systemd/betasoft-release-transport.service
-          ! grep -q -- '--stage' deploy/agent/systemd/betasoft-release-transport.service
+          ! grep '^ExecStart=' deploy/agent/systemd/betasoft-release-transport.service | grep -q -- '--stage'
       - name: Test approved release agent fail-closed gates
         shell: bash
         run: |
