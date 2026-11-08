@@ -105,7 +105,9 @@ class TransportTests(unittest.TestCase):
                  mock.patch.object(transport, "read_approval", return_value=approval), \
                  mock.patch.object(transport, "verify_zip", return_value={
                      "environment": "pilot", "source_sha": self.source, "image": self.image}):
-                self.assertEqual(transport.run(args, getter=get), "VERIFIED_ONLY")
+                result, context = transport.run(args, getter=get)
+                self.assertEqual(result, "VERIFIED_ONLY")
+                self.assertEqual(context["run_id"], 123)
                 self.assertFalse(Path(args.output).exists())
                 payload[0] = data + b"modified"
                 with self.assertRaises(transport.TransportError):
