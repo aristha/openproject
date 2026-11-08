@@ -99,10 +99,10 @@ class TransportTests(unittest.TestCase):
                 if "/runs/" in url:
                     return json.dumps(self.run).encode()
                 return json.dumps(self.artifact).encode()
-            with mock.patch.object(transport.os, "geteuid", return_value=0), \\
+            with mock.patch.object(transport.os, "geteuid", return_value=0), \
                  mock.patch.object(transport, "control_file", side_effect=[
-                     json.dumps(self.request), "token", json.dumps(self.request), "token"]), \\
-                 mock.patch.object(transport, "read_approval", return_value=approval), \\
+                     json.dumps(self.request), "token", json.dumps(self.request), "token"]), \
+                 mock.patch.object(transport, "read_approval", return_value=approval), \
                  mock.patch.object(transport, "verify_zip", return_value={
                      "environment": "pilot", "source_sha": self.source, "image": self.image}):
                 self.assertEqual(transport.run(args, getter=get), "VERIFIED_ONLY")
