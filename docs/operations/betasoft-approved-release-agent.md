@@ -93,6 +93,15 @@ and `sudo chmod 0600 /etc/betasoft/approved-release/approval.json`.
    When approved, expected output: `AGENT_OBSERVE_ONLY verified approved release; nothing deployed`.
    Unapproved/broken/expired releases exit nonzero.
 
+## Additional fail-closed host prerequisites (security hardening)
+
+- Every directory component in the configured inbox and state paths must be root-owned, a real directory, and not writable by group/others. Avoid symlinks, including in ancestor components.
+- The backup hook and its parent directories must be root-owned; the hook must be a regular executable file that is not writable by group/others.
+- Lock and deployed-state files must be root-only. Existing state with unsafe ownership, permissions, or type is rejected.
+- The release ZIP is subject to both compressed (8 MiB) and aggregate uncompressed (4 MiB) limits; oversized bundles fail without deployment.
+- The deployment subprocess receives a minimal environment (PATH, HOME, LANG and explicitly documented DEPLOY_* inputs), not arbitrary inherited shell variables. If a supported deploy requires additional variables, review and explicitly add them instead of forwarding the host environment wholesale.
+- These checks are code-level defense in depth. Do not enable --execute until the operator validates them on a disposable staging host and the live rollback/recovery acceptance gates are met.
+
 ## Optional execution: NOT yet approved for the pilot
 
 **Do not enable execution for Issue #9 before Issue #6 live rollback and
