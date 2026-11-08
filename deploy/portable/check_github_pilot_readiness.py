@@ -16,6 +16,7 @@ API = "https://api.github.com/repos/aristha/openproject"
 ALLOWED = {
     API + "/environments/pilot",
     API + "/branches/dev",
+    API + "/branches/dev/protection",
     API + "/environments/pilot/deployment-branch-policies?per_page=100",
 }
 MAX_RESPONSE = 128 * 1024
@@ -56,7 +57,42 @@ def github_get(url, token):
         raise ReadinessError("Malformed GitHub metadata") from exc
 
 
-def check_environment(env, dev_branch, branch_policies=None):
+def check_branch_protection(protection):
+    """Enforce meaningful branch controls, not only the 'protected' boolean."""
+    if not isinstance(protection, dict):
+        raise ReadinessError("Dev branch protection metadata unavailable")
+    reviews = protection.get("required_pull_request_reviews")
+    if not isinstance(reviews, dict):
+        raise ReadinessError("Dev branch does not require reviewed pull requests")
+    count = reviews.get("required_approving_review_count")
+    if type(count) is not int or count < 1:
+        raise ReadinessError("Dev branch needs at least one approving review")
+    if reviews.get("dismiss_stale_reviews") is not True:
+        raise ReadinessError("Outdated PR approvals must be dismissed")
+    checks = protection.get("required_status_checks")
+    if not isinstance(checks, dict) or checks.get("strict") is not True:
+        raise ReadinessError("Up-to-date required status checks missing")
+    contexts = checks.get("contexts", [])
+    structured = checks.get("checks", [])
+    if not isinstance(contexts, list) or not isinstance(structured, list):
+        raise ReadinessError("Malformed required status checks")
+    names = [x for x in contexts if isinstance(x, str)]
+    names += [x.get("context") for x in structured if isinstance(x, dict)]
+    if not any(isinstance(x, str) and (x == "validate" or
+               x.endswith(" / validate")) for x in names):
+        raise ReadinessError("Portable deployment validation must be required")
+    admins = protection.get("enforce_admins")
+    if not isinstance(admins, dict) or admins.get("enabled") is not True:
+        raise ReadinessError("Branch restrictions must apply to administrators")
+    for key in ("allow_force_pushes", "allow_deletions"):
+        control = protection.get(key)
+        if not isinstance(control, dict) or control.get("enabled") is not False:
+            raise ReadinessError("Dev branch must forbid force-push and deletion")
+    return True
+
+
+def check_environment(env, dev_branch, branch_policies=None, protection=None):
+
     if not isinstance(env, dict) or env.get("name") != "pilot":
         raise ReadinessError("Expected existing pilot environment")
     rules = env.get("protection_rules")
@@ -96,11 +132,15 @@ def check_environment(env, dev_branch, branch_policies=None):
             raise ReadinessError("Custom branch policy must allow exact dev only")
         if len(policies) != 1 or policies[0].get("name") != "dev" or policies[0].get("type") != "branch":
             raise ReadinessError("Custom pilot branch policy must be exact dev branch")
+    check_branch_protection(protection)
     return {
         "pilot_exists": True,
         "required_reviewers_present": True,
         "prevent_self_review": True,
         "dev_branch_protected": dev_branch.get("protected") is True,
+        "dev_required_pr_review": True,
+        "dev_required_status_checks": True,
+        "dev_admin_enforcement": True,
         "branch_policy": "protected" if protected else "exact-dev",
         "status": "METADATA_PRECHECK_PASS",
     }
@@ -109,11 +149,12 @@ def check_environment(env, dev_branch, branch_policies=None):
 def run(getter, token):
     env = getter(API + "/environments/pilot", token)
     branch = getter(API + "/branches/dev", token)
+    protection = getter(API + "/branches/dev/protection", token)
     policy = env.get("deployment_branch_policy") if isinstance(env, dict) else None
     custom = (getter(API + "/environments/pilot/deployment-branch-policies?per_page=100", token)
               if isinstance(policy, dict) and policy.get("custom_branch_policies") is True
               else None)
-    return check_environment(env, branch, custom)
+    return check_environment(env, branch, custom, protection)
 
 
 def main():
