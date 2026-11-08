@@ -210,6 +210,12 @@ def run(args, *, getter=http_get):
         if any(manifest[k] != request[k] for k in ("environment", "source_sha", "image")):
             raise TransportError("Verified release manifest differs from approval")
     if args.stage:
+        if not args.provenance_policy:
+            raise TransportError("Signed image provenance policy required for staging")
+        # Late import avoids circular module dependency in default verify-only mode.
+        from image_provenance import load_policy, verify_image
+        policy = load_policy(args.provenance_policy)
+        verify_image(request["image"], policy)
         atomic_stage(Path(args.output), data)
     return ("STAGED" if args.stage else "VERIFIED_ONLY"), request
 
@@ -223,6 +229,8 @@ def main():
     parser.add_argument("--audit", default="/var/lib/betasoft-release-agent/transport-audit.jsonl")
     parser.add_argument("--alerts", default="/var/lib/betasoft-release-agent/alerts")
     parser.add_argument("--stage", action="store_true", help="Only stage verified ZIP; no deploy")
+    parser.add_argument("--provenance-policy", default=None,
+                        help="Root-only signed-image provenance policy required for --stage")
     args = parser.parse_args()
     try:
         result, request = run(args)
