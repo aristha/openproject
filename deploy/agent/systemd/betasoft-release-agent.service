@@ -13,5 +13,5 @@ ExecStart=/usr/bin/python3 /usr/local/libexec/betasoft-release-agent/agent/appro
 TimeoutStartSec=26min
 UMask=0077
 NoNewPrivileges=true
-# Intentionally no --execute and no enabling EnvironmentFile.
+# Intentionally observer-only with no execution flag or enabling EnvironmentFile.
 # To turn on real deployment, operator must supply a separately reviewed override.
