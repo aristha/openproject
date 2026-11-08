@@ -106,6 +106,7 @@ class AgentTests(unittest.TestCase):
         with mock.patch.object(agent.os, "geteuid", return_value=0), \
              mock.patch.object(agent, "require_root_owned_dir"), \
              mock.patch.object(agent, "read_approval", return_value=self.approval), \
+             mock.patch.object(agent.os, "fstat", return_value=mock.Mock(st_uid=0, st_mode=0o100600)), \
              mock.patch.object(agent.subprocess, "run") as run:
             self.assertEqual(agent.run(args), 0)
             run.assert_not_called()
@@ -116,6 +117,7 @@ class AgentTests(unittest.TestCase):
         with mock.patch.object(agent.os, "geteuid", return_value=0), \
              mock.patch.object(agent, "require_root_owned_dir"), \
              mock.patch.object(agent, "read_approval", return_value=self.approval), \
+             mock.patch.object(agent.os, "fstat", return_value=mock.Mock(st_uid=0, st_mode=0o100600)), \
              mock.patch.dict(agent.os.environ, {"OPENPROJECT_AGENT_EXECUTE_ENABLED": ""}):
             with self.assertRaisesRegex(ValueError, "Execution disabled"):
                 agent.run(args)
