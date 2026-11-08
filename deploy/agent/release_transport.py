@@ -153,9 +153,13 @@ def atomic_stage(target, payload):
             os.unlink(name)
 
 
-def audit(path, event, *, detail=""):
+def audit(path, event, *, detail="", context=None):
     record = {"time": dt.datetime.now(dt.timezone.utc).isoformat(),
               "event": event, "detail": detail[:120]}
+    if context:
+        record.update({key: context[key] for key in
+                       ("run_id", "artifact_id", "source_sha", "artifact_sha256")
+                       if key in context})
     line = json.dumps(record, sort_keys=True)
     print("RELEASE_TRANSPORT " + line, flush=True)
     require_root_owned_dir(path.parent)
@@ -207,7 +211,7 @@ def run(args, *, getter=http_get):
             raise TransportError("Verified release manifest differs from approval")
     if args.stage:
         atomic_stage(Path(args.output), data)
-    return "STAGED" if args.stage else "VERIFIED_ONLY"
+    return ("STAGED" if args.stage else "VERIFIED_ONLY"), request
 
 
 def main():
@@ -221,14 +225,17 @@ def main():
     parser.add_argument("--stage", action="store_true", help="Only stage verified ZIP; no deploy")
     args = parser.parse_args()
     try:
-        result = run(args)
-        audit(Path(args.audit), result)
+        result, request = run(args)
+        audit(Path(args.audit), result, context=request)
         return 0
     except (ValueError, OSError, urllib.error.URLError, HTTPException, json.JSONDecodeError) as exc:
         # No signed redirect URLs or bearer tokens in user-readable logs.
         print("RELEASE_TRANSPORT_REJECTED", file=sys.stderr)
         try:
             audit(Path(args.audit), "FAILED", detail=type(exc).__name__)
+        except (OSError, ValueError):
+            print("RELEASE_TRANSPORT_AUDIT_FAILED", file=sys.stderr)
+        try:
             alert_spool(Path(args.alerts))
         except (OSError, ValueError):
             print("RELEASE_TRANSPORT_ALERT_SPOOL_FAILED", file=sys.stderr)
