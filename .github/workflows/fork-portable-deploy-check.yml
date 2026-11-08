@@ -68,6 +68,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s deploy/portable -p 'test_verify_release.py' -v
+      - name: Verify pilot GitHub environment readiness preflight fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile deploy/portable/check_github_pilot_readiness.py deploy/portable/test_github_pilot_readiness.py
+          python3 -m unittest discover -s deploy/portable -p 'test_github_pilot_readiness.py' -v
       - name: Verify read-only online GHCR acceptance workflow contracts
         shell: bash
         run: |
