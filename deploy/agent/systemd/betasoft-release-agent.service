@@ -1,0 +1,17 @@
+[Unit]
+Description=BetaSoft OpenProject approved release agent (observe-only)
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/usr/local/libexec/betasoft-release-agent
+ExecStart=/usr/bin/python3 /usr/local/libexec/betasoft-release-agent/approved_release_agent.py
+TimeoutStartSec=26min
+UMask=0077
+NoNewPrivileges=true
+# Intentionally no --execute and no enabling EnvironmentFile.
+# To turn on real deployment, operator must supply a separately reviewed override.
