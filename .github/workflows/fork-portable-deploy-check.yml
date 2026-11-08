@@ -73,6 +73,16 @@ jobs:
           python3 -m unittest discover -s deploy/agent -p 'test_release_transport.py' -v
           grep -q 'NoNewPrivileges=true' deploy/agent/systemd/betasoft-release-transport.service
           ! grep '^ExecStart=' deploy/agent/systemd/betasoft-release-transport.service | grep -q -- '--stage'
+      - name: Test Phase 3 signed image provenance and alert dispatcher fail-closed gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile deploy/agent/image_provenance.py deploy/agent/alert_dispatch.py deploy/agent/test_image_provenance.py deploy/agent/test_alert_dispatch.py
+          python3 -m unittest discover -s deploy/agent -p 'test_image_provenance.py' -v
+          python3 -m unittest discover -s deploy/agent -p 'test_alert_dispatch.py' -v
+          python3 -m unittest discover -s deploy/agent -p 'test_release_transport.py' -v
+          ! grep '^ExecStart=' deploy/agent/systemd/betasoft-release-transport.service | grep -q -- '--stage'
+          ! grep '^ExecStart=' deploy/agent/systemd/betasoft-release-agent.service | grep -q -- '--execute'
       - name: Test approved release agent fail-closed gates
         shell: bash
         run: |
