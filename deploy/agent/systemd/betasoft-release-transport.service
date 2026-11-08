@@ -1,0 +1,17 @@
+[Unit]
+Description=BetaSoft approved GitHub release transport (verify-only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/usr/local/libexec/betasoft-release-agent/agent
+ExecStart=/usr/bin/python3 /usr/local/libexec/betasoft-release-agent/agent/release_transport.py
+TimeoutStartSec=90s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+# No --stage. No --execute. Not installed/enabled by this source-only PR.
