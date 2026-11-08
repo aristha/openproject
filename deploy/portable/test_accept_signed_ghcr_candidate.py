@@ -95,6 +95,17 @@ class RegistryAcceptanceTests(unittest.TestCase):
         with self.assertRaises(ProvenanceError):
             policy_for(self.digest, "a" * 8)
 
+    def test_host_default_binary_unmodified(self):
+        from image_provenance import verify_image
+        policy = policy_for(self.digest, self.source)
+        seen = []
+        def runner(cmd, **kwargs):
+            seen.append((cmd, kwargs))
+            return mock.Mock(returncode=0, stdout=self.stdout)
+        self.assertTrue(verify_image(policy["image"], policy, runner=runner))
+        self.assertEqual(seen[0][0][0], "/usr/local/bin/cosign")
+        self.assertEqual(seen[0][1]["env"]["HOME"], "/root")
+
     def test_policy_workflow_pinned(self):
         p = policy_for(self.digest, self.source)
         self.assertEqual(p["certificate_identity"], IDENTITY)
