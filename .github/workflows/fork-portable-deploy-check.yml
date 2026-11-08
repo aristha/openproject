@@ -7,6 +7,8 @@ name: Fork / Portable deployment checks
       - docs/operations/betasoft-approved-release-agent.md
       - docs/operations/betasoft-pilot-deploy.md
       - .github/workflows/fork-prepare-portable-release.yml
+      - .github/workflows/fork-build-attested-image.yml
+      - docs/operations/betasoft-release-readiness-phase4.md
       - .github/workflows/fork-portable-deploy-check.yml
   workflow_dispatch:
 
@@ -65,6 +67,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s deploy/portable -p 'test_verify_release.py' -v
+      - name: Verify manual attested GHCR image build producer/consumer contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile deploy/portable/write_slsa_build_predicate.py deploy/portable/check_verified_build_attestation.py deploy/portable/test_slsa_build_predicate.py
+          python3 -m unittest discover -s deploy/portable -p 'test_slsa_build_predicate.py' -v
       - name: Test Phase 2 authenticated transport fail-closed gates
         shell: bash
         run: |
