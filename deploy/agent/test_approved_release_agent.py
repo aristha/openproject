@@ -106,6 +106,7 @@ class AgentTests(unittest.TestCase):
         with mock.patch.object(agent.os, "geteuid", return_value=0), \
              mock.patch.object(agent, "require_root_owned_dir"), \
              mock.patch.object(agent, "read_approval", return_value=self.approval), \
+             mock.patch.object(agent, "require_root_lock"), \
              mock.patch.object(agent.subprocess, "run") as run:
             self.assertEqual(agent.run(args), 0)
             run.assert_not_called()
@@ -116,6 +117,7 @@ class AgentTests(unittest.TestCase):
         with mock.patch.object(agent.os, "geteuid", return_value=0), \
              mock.patch.object(agent, "require_root_owned_dir"), \
              mock.patch.object(agent, "read_approval", return_value=self.approval), \
+             mock.patch.object(agent, "require_root_lock"), \
              mock.patch.dict(agent.os.environ, {"OPENPROJECT_AGENT_EXECUTE_ENABLED": ""}):
             with self.assertRaisesRegex(ValueError, "Execution disabled"):
                 agent.run(args)
@@ -125,6 +127,49 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(agent.permitted_window(dt.datetime(2026, 11, 9, 10, 0, tzinfo=tz)))
         self.assertFalse(agent.permitted_window(dt.datetime(2026, 11, 8, 10, 0, tzinfo=tz)))
         self.assertFalse(agent.permitted_window(dt.datetime(2026, 11, 9, 17, 45, tzinfo=tz)))
+
+
+    def test_reject_zip_expansion_over_limit(self):
+        self.files["deploy.sh"] = b"x" * (4 * 1024 * 1024 + 1)
+        self.write_zip()
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaisesRegex(ValueError, "uncompressed size"):
+                agent.verify_zip(self.inbox / "release.zip", self.approval["artifact_sha256"], Path(d))
+
+    def test_reject_symlink_state_file(self):
+        target = self.root / "outside.json"
+        target.write_text("{}")
+        link = self.state / "last-deployed.json"
+        link.symlink_to(target)
+        with self.assertRaisesRegex(ValueError, "root-only regular"):
+            agent.read_state(link)
+
+    def test_reject_writable_backup_hook(self):
+        hook = self.root / "unsafe-backup.sh"
+        hook.write_text("#!/bin/sh\\nexit 0\\n")
+        hook.chmod(0o777)
+        with self.assertRaises(ValueError):
+            agent.require_root_executable(hook)
+
+    def test_reject_symlink_backup_hook(self):
+        script = self.root / "backup.sh"
+        script.write_text("#!/bin/sh\\nexit 0\\n")
+        script.chmod(0o700)
+        link = self.root / "backup-link"
+        link.symlink_to(script)
+        with self.assertRaises(ValueError):
+            agent.require_root_executable(link)
+
+    def test_reject_relative_agent_directory(self):
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            agent.require_root_owned_dir(Path("relative/inbox"))
+
+    def test_reject_symlink_agent_directory(self):
+        link = self.root / "symlink-inbox"
+        link.symlink_to(self.inbox, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            agent.require_root_owned_dir(link)
+
 
 
 from zoneinfo import ZoneInfo

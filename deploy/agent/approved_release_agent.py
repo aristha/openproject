@@ -12,7 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -75,6 +75,8 @@ def verify_zip(zip_path, approved_hash, output):
     if hashlib.sha256(zip_path.read_bytes()).hexdigest() != approved_hash:
         reject("Release ZIP differs from independently approved SHA256")
     with zipfile.ZipFile(zip_path) as z:
+        if sum(info.file_size for info in z.infolist()) > 4 * 1024 * 1024:
+            reject("Release ZIP uncompressed size exceeds 4 MiB")
         if set(z.namelist()) != BUNDLE_NAMES or len(z.infolist()) != len(BUNDLE_NAMES):
             reject("Unexpected ZIP contents")
         for entry in z.infolist():
@@ -96,9 +98,40 @@ def permitted_window(now):
 
 
 def require_root_owned_dir(path):
+    """Reject unsafe directory components, including symlinks and writable parents."""
+    if not path.is_absolute():
+        reject("Agent directory path must be absolute")
+    current = Path("/")
+    for component in path.parts[1:]:
+        current = current / component
+        st = current.lstat()
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
+            reject("Agent directory path has unsafe ownership or permissions")
+
+
+def require_root_executable(path):
+    if not path.is_absolute():
+        reject("Backup hook must use an absolute path")
+    require_root_owned_dir(path.parent)
     st = path.lstat()
-    if not path.is_dir() or path.is_symlink() or st.st_uid != 0 or st.st_mode & 0o022:
-        reject("Agent inbox must be a root-owned directory not writable by group/others")
+    if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0
+            or st.st_mode & 0o022 or not os.access(path, os.X_OK)):
+        reject("Backup hook must be a root-owned, non-writable executable regular file")
+
+
+def require_root_lock(fd):
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+        reject("Agent lock file must be root-only")
+
+
+def read_state(path):
+    if not path.exists() and not path.is_symlink():
+        return None
+    st = path.lstat()
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+        reject("Agent deployment state must be a root-only regular file")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def run(args):
@@ -106,8 +139,6 @@ def run(args):
         reject("Agent must run as root on pilot to use root-only Docker Compose plugin")
     inbox = Path(args.inbox)
     require_root_owned_dir(inbox)
-    if not Path(args.backup_hook).is_absolute():
-        reject("Backup hook must be absolute")
     approval_path = inbox / "approval.json"
     zip_path = inbox / "release.zip"
     if not approval_path.exists():
@@ -119,7 +150,10 @@ def run(args):
 
     state_dir = Path(args.state_dir)
     require_root_owned_dir(state_dir)
-    with (state_dir / "agent.lock").open("a+") as lock:
+    lock_path = state_dir / "agent.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "a+") as lock:
+        require_root_lock(lock.fileno())
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with tempfile.TemporaryDirectory(prefix="openproject-agent-") as scratch:
             extracted = Path(scratch)
@@ -132,11 +166,10 @@ def run(args):
                 reject("Migration-bearing releases rejected")
 
             state_file = state_dir / "last-deployed.json"
-            if state_file.exists():
-                previous = json.loads(state_file.read_text(encoding="utf-8"))
-                if previous.get("artifact_sha256") == approval["artifact_sha256"]:
-                    print("AGENT_ALREADY_APPLIED")
-                    return 0
+            previous = read_state(state_file)
+            if previous is not None and previous.get("artifact_sha256") == approval["artifact_sha256"]:
+                print("AGENT_ALREADY_APPLIED")
+                return 0
 
             if not args.execute:
                 print("AGENT_OBSERVE_ONLY verified approved release; nothing deployed")
@@ -146,12 +179,13 @@ def run(args):
             if not permitted_window(dt.datetime.now(dt.timezone.utc)):
                 reject("Outside weekday 08:45–17:15 Asia/Ho_Chi_Minh deployment window")
             backup = Path(args.backup_hook)
-            if not backup.is_file() or not os.access(backup, os.X_OK):
-                reject("Approved backup hook missing or not executable")
+            require_root_executable(backup)
             # Only execute the inspected, checksum-verified, explicitly approved release script.
             deploy = extracted / "deploy.sh"
             env = {
-                **os.environ,
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "HOME": "/root",
+                "LANG": "C.UTF-8",
                 "DEPLOY_ROOT": args.deploy_root,
                 "DEPLOY_BACKUP_HOOK": str(backup),
                 "DEPLOY_SCHEMA_APPROVED": "NO_MIGRATIONS",
@@ -166,10 +200,18 @@ def run(args):
                 "image": approval["image"],
                 "deployed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             }
-            temp_state = state_dir / "last-deployed.json.new"
-            temp_state.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-            os.chmod(temp_state, 0o600)
-            temp_state.replace(state_file)
+            fd, temp_path = tempfile.mkstemp(prefix=".last-deployed-", dir=state_dir)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as state_out:
+                    os.fchmod(state_out.fileno(), 0o600)
+                    json.dump(record, state_out, indent=2)
+                    state_out.write("\n")
+                    state_out.flush()
+                    os.fsync(state_out.fileno())
+                os.replace(temp_path, state_file)
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
             print("AGENT_DEPLOY_SUCCESS", flush=True)
     return 0
 
