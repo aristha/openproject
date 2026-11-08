@@ -113,6 +113,35 @@ class TransportTests(unittest.TestCase):
                 with self.assertRaises(transport.TransportError):
                     transport.run(args, getter=get)
 
+    def test_stage_refuses_missing_signed_provenance_policy(self):
+        with tempfile.TemporaryDirectory() as d:
+            args = mock.Mock(request=d + "/request", approval=d + "/approval",
+                             token_file=d + "/token", output=d + "/release.zip",
+                             stage=True, provenance_policy=None)
+            approval = {k: self.request[k] for k in
+                        ("artifact_sha256", "source_sha", "image", "environment")}
+            import io
+            with io.BytesIO() as fp:
+                with zipfile.ZipFile(fp, "w") as z:
+                    z.writestr("release.json", "{}")
+                data = fp.getvalue()
+            self.request["artifact_sha256"] = hashlib.sha256(data).hexdigest()
+            self.artifact["digest"] = "sha256:" + self.request["artifact_sha256"]
+            self.artifact["size_in_bytes"] = len(data)
+            approval["artifact_sha256"] = self.request["artifact_sha256"]
+            def get(url, token, archive=False):
+                return (data if archive else
+                        json.dumps(self.run if "/runs/" in url else self.artifact).encode())
+            with mock.patch.object(transport.os, "geteuid", return_value=0), \
+                 mock.patch.object(transport, "control_file", side_effect=[
+                     json.dumps(self.request), "token"]), \
+                 mock.patch.object(transport, "read_approval", return_value=approval), \
+                 mock.patch.object(transport, "verify_zip", return_value={
+                     "environment": "pilot", "source_sha": self.source, "image": self.image}):
+                with self.assertRaisesRegex(transport.TransportError, "provenance policy required"):
+                    transport.run(args, getter=get)
+                self.assertFalse(Path(args.output).exists())
+
     def test_atomic_stage(self):
         with tempfile.TemporaryDirectory() as d:
             target = Path(d) / "release.zip"
