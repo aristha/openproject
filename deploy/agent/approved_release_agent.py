@@ -19,6 +19,7 @@ import tempfile
 import zipfile
 from zoneinfo import ZoneInfo
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "portable"))
 from verify_release import FILES, verify
 
 APPROVAL_FIELDS = {
