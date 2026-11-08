@@ -15,9 +15,14 @@ The GitHub repository must have an existing Environment named `pilot` with:
   with the `dev` branch actually protected, or **exactly** `dev`
   explicitly allowlisted as the only custom deployment branch policy.
 - No broad branch pattern, silent missing reviewer, or missing permissions.
+- A real `dev` **branch protection response** requiring at least one approving
+  PR review, dismissal of stale approvals, up-to-date required checks including
+  the portable `validate` job, administrator enforcement, and rejection of
+  force pushes/deletions. The `protected: true` flag alone is insufficient.
 
 The script queries GitHub's REST API to read metadata for the Environment
-and `dev` branch, and (when applicable) custom deployment branch policies.
+and `dev` branch plus `GET /branches/dev/protection`, and (when
+applicable) custom deployment branch policies.
 It exits nonzero on HTTP error, missing permissions, incomplete metadata,
 unprotected branch, missing reviewers or broad branch allowance. Results
 contain only booleans and policy status, never tokens or reviewer names.
@@ -30,7 +35,7 @@ of live GitHub settings.
 ## Operator-run preflight
 
 Provide a short-lived GitHub token permitted to READ repository Environment
-configuration and branch protection metadata; this may require repository
+configuration and **branch protection Administration (read)** metadata; this may require repository
 administrative access, depending on GitHub's API access policy. Avoid
 embedding a token in scripts, workflow files, or a CLI argument.
 
@@ -46,6 +51,12 @@ token as a repository Actions secret just to run this preflight.
 
 Expected output: `"status": "METADATA_PRECHECK_PASS"`. If a GET returns
 403/404, treat the result as **unverified**, not an environment approval.
+
+A repository using modern **rulesets instead of legacy branch protection**
+may return HTTP 404 from the legacy protection endpoint. This tool deliberately
+fails closed rather than treating `protected: true` as sufficient; ruleset
+inspection and an independently reviewed equivalent check are required before
+the preflight can be considered passed.
 
 Manual checklist following a metadata PASS:
 
