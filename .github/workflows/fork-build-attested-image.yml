@@ -1,0 +1,97 @@
+name: Fork / Build and attest GHCR candidate (manual only)
+
+"on":
+  workflow_dispatch:
+
+# Manually dispatched on dev only. Never installs on EC2 or deploys a container.
+# Registry image and signature changes occur ONLY when an operator explicitly runs it.
+permissions:
+  contents: read
+
+concurrency:
+  group: openproject-attested-ghcr-candidate
+  cancel-in-progress: false
+
+jobs:
+  build-attested-candidate:
+    if: github.repository == 'aristha/openproject' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: pilot
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Checkout reviewed image build source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate build source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -f docker/prod/Dockerfile
+          test -f deploy/portable/write_slsa_build_predicate.py
+          python3 -m unittest discover -s deploy/portable -p 'test_slsa_build_predicate.py' -v
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Authenticate to GHCR for candidate image only
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push immutable candidate
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: ./docker/prod/Dockerfile
+          push: true
+          tags: ghcr.io/aristha/openproject:attested-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          provenance: mode=min
+          sbom: false
+      - name: Install reviewed Cosign
+        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+      - name: Generate source-bound SLSA v1 predicate
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python3 deploy/portable/write_slsa_build_predicate.py \
+            --source-sha "$GITHUB_SHA" \
+            --image-digest "$IMAGE_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$RUNNER_TEMP/openproject-slsa-predicate.json"
+      - name: Keyless-sign attestation for exact pushed digest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          cosign attest --yes --type slsaprovenance1 \
+            --predicate "$RUNNER_TEMP/openproject-slsa-predicate.json" \
+            "ghcr.io/aristha/openproject@$IMAGE_DIGEST"
+      - name: Verify signed provenance and source binding
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=deploy/agent
+          cosign verify-attestation --type slsaprovenance1 \
+            --certificate-identity "https://github.com/aristha/openproject/.github/workflows/fork-build-attested-image.yml@refs/heads/dev" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --output json "ghcr.io/aristha/openproject@$IMAGE_DIGEST" \
+            > "$RUNNER_TEMP/openproject-verified-attestation.json"
+          python3 deploy/portable/check_verified_build_attestation.py \
+            --verified-json "$RUNNER_TEMP/openproject-verified-attestation.json" \
+            --source-sha "$GITHUB_SHA" --image-digest "$IMAGE_DIGEST"
+          echo "Signed provenance verified for ghcr.io/aristha/openproject@$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          echo "This candidate image is NOT approved for deployment." >> "$GITHUB_STEP_SUMMARY"
