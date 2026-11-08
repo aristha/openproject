@@ -28,7 +28,7 @@ existing 08:30–18:30 weekday schedule, and this agent cannot start EC2.
 After reviewing and merging this PR, download from a **pinned commit** or
 approved source checkout. Run on the pilot EC2 only after reviewing paths:
 
-\`\`\`bash
+```bash
 sudo install -d -o root -g root -m 0700 /etc/betasoft/approved-release
 sudo install -d -o root -g root -m 0700 /var/lib/betasoft-release-agent
 sudo install -d -o root -g root -m 0750 /usr/local/libexec/betasoft-release-agent/agent
@@ -45,19 +45,19 @@ sudo systemctl daemon-reload
 sudo systemd-analyze verify betasoft-release-agent.service betasoft-release-agent.timer
 sudo systemctl start betasoft-release-agent.service
 sudo journalctl -u betasoft-release-agent.service -n 30 --no-pager
-\`\`\`
+```
 
-Until a release is staged, expected log is \`AGENT_NO_APPROVED_RELEASE\`.
+Until a release is staged, expected log is `AGENT_NO_APPROVED_RELEASE`.
 Enabling the timer is optional and remains observer-only:
 
-\`\`\`bash
+```bash
 sudo systemctl enable --now betasoft-release-agent.timer
 systemctl list-timers --all betasoft-release-agent.timer
-\`\`\`
+```
 
 The timer is weekday every five minutes. Execution has a narrower window:
 08:45–17:15 Asia/Ho_Chi_Minh, keeping away from scheduled backup at 17:45
-and EC2 stop at 18:30. If the host is down, \`Persistent=false\` ensures
+and EC2 stop at 18:30. If the host is down, `Persistent=false` ensures
 no catch-up deployment.
 
 ## Preparing a reviewed pilot release — separate manual approval
@@ -65,14 +65,14 @@ no catch-up deployment.
 1. Verify the release's GitHub workflow run completed successfully, validate
    its GHCR digest against the **independent image build**, and ensure the
    artifact came from the intended release source revision. Do not assume
-   source_sha in \`release.json\` is the image's build source SHA.
+   source_sha in `release.json` is the image's build source SHA.
 2. Download and independently check the ZIP SHA256. Install the ZIP into the
    root-only inbox **without extracting executable scripts into the host**:
-   \`sudo install -o root -g root -m 0600 openproject-pilot-N.zip /etc/betasoft/approved-release/release.zip\`.
+   `sudo install -o root -g root -m 0600 openproject-pilot-N.zip /etc/betasoft/approved-release/release.zip`.
 3. An administrator separately writes root-owned
-   \`/etc/betasoft/approved-release/approval.json\` with exactly:
+   `/etc/betasoft/approved-release/approval.json` with exactly:
 
-\`\`\`json
+```json
 {
   "schema_version": 1,
   "environment": "pilot",
@@ -82,25 +82,25 @@ no catch-up deployment.
   "schema_approved": "NO_MIGRATIONS",
   "expires_at": "2026-11-09T09:00:00+00:00"
 }
-\`\`\`
+```
 
 **Example expiry is illustrative**, not valid indefinitely. Use an actual
 future expiry within seven days. Ensure ownership root and permissions 0600:
-\`sudo chown root:root /etc/betasoft/approved-release/approval.json\`
-and \`sudo chmod 0600 /etc/betasoft/approved-release/approval.json\`.
+`sudo chown root:root /etc/betasoft/approved-release/approval.json`
+and `sudo chmod 0600 /etc/betasoft/approved-release/approval.json`.
 
-4. Run observer manually: \`sudo systemctl start betasoft-release-agent.service\`.
-   When approved, expected output: \`AGENT_OBSERVE_ONLY verified approved release; nothing deployed\`.
+4. Run observer manually: `sudo systemctl start betasoft-release-agent.service`.
+   When approved, expected output: `AGENT_OBSERVE_ONLY verified approved release; nothing deployed`.
    Unapproved/broken/expired releases exit nonzero.
 
 ## Optional execution: NOT yet approved for the pilot
 
 **Do not enable execution for Issue #9 before Issue #6 live rollback and
 Issue #5 recovery readiness/alerts are accepted.** Enabling requires:
-an explicit systemd unit override to append \`--execute\`, and a root-only
-EnvironmentFile setting \`OPENPROJECT_AGENT_EXECUTE_ENABLED=YES\`.
+an explicit systemd unit override to append `--execute`, and a root-only
+EnvironmentFile setting `OPENPROJECT_AGENT_EXECUTE_ENABLED=YES`.
 Both gates are necessary; neither is enabled by the shipped service.
-The agent then invokes the vetted bundle's \`deploy.sh --execute\` with a
+The agent then invokes the vetted bundle's `deploy.sh --execute` with a
 root-local backup hook, only within the weekday window. That deploy script
 performs a backup before changing images, checks HTTP 200, and attempts
 image-only rollback. A successful deployment writes a root-only state
