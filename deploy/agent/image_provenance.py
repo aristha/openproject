@@ -121,6 +121,67 @@ def parse_verified_cosign(result, policy):
     raise ProvenanceError("No signed SLSA statement binds approved image and build SHA")
 
 
+
+def verified_statement_diagnostic(result, policy):
+    """Static fail-closed reason for an already-Cosign-verified statement.
+
+    Never return any JSON content, subject name, signature, SHA or identity.
+    This function does not attest to cryptographic verification by itself.
+    """
+    if not isinstance(result, bytes) or len(result) > MAX_RESULT:
+        return "OUTPUT_UNREADABLE"
+    try:
+        entries = json.loads(result)
+    except (ValueError, UnicodeDecodeError):
+        return "OUTPUT_UNREADABLE"
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list) or not entries:
+        return "OUTPUT_UNREADABLE"
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("payload"), str):
+            continue
+        if "payloadType" in entry and entry["payloadType"] != "application/vnd.in-toto+json":
+            return "DSSE_PAYLOAD_TYPE"
+        try:
+            statement = json.loads(base64.b64decode(entry["payload"], validate=True))
+            if isinstance(statement, dict) and "payloadType" in statement:
+                if statement.get("payloadType") != "application/vnd.in-toto+json":
+                    return "DSSE_PAYLOAD_TYPE"
+                statement = json.loads(base64.b64decode(statement["payload"], validate=True))
+        except (binascii.Error, ValueError, UnicodeDecodeError, TypeError, KeyError):
+            return "PAYLOAD_DECODE"
+        if not isinstance(statement, dict):
+            return "STATEMENT_SHAPE"
+        if statement.get("_type") != "https://in-toto.io/Statement/v1":
+            return "STATEMENT_TYPE"
+        if statement.get("predicateType") != PREDICATE:
+            return "PREDICATE_TYPE"
+        digest_match = IMAGE.fullmatch(policy["image"])
+        if digest_match is None:
+            return "POLICY_INVALID"
+        subjects = statement.get("subject")
+        if not isinstance(subjects, list) or not any(
+            isinstance(s, dict)
+            and s.get("name") in ("ghcr.io/aristha/openproject", "pkg:docker/aristha/openproject")
+            and isinstance(s.get("digest"), dict)
+            and s["digest"].get("sha256") == digest_match.group(1)
+            for s in subjects
+        ):
+            return "SUBJECT_OR_DIGEST"
+        pred = statement.get("predicate")
+        definition = pred.get("buildDefinition") if isinstance(pred, dict) else None
+        dependencies = definition.get("resolvedDependencies") if isinstance(definition, dict) else None
+        if not isinstance(dependencies, list) or not any(
+            isinstance(dep, dict) and dep.get("uri") in SOURCES
+            and isinstance(dep.get("digest"), dict)
+            and dep["digest"].get("gitCommit") == policy["build_sha"]
+            for dep in dependencies
+        ):
+            return "SOURCE_DEPENDENCY"
+        return "MATCHED_STATEMENT"
+    return "NO_SUPPORTED_PAYLOAD"
+
 def verify_image(image, policy, *, runner=subprocess.run,
                  cosign_binary="/usr/local/bin/cosign", subprocess_env=None):
     # Host verification defaults to the reviewed fixed root-owned Cosign binary.
