@@ -32,11 +32,14 @@ def main():
     p.add_argument("--source-sha", required=True)
     p.add_argument("--image-digest", required=True)
     args = p.parse_args()
-    result = Path(args.verified_json).read_bytes()
     try:
+        result = Path(args.verified_json).read_bytes()
         check(result, args.source_sha, args.image_digest)
-    except (ValueError, ProvenanceError) as exc:
-        raise SystemExit("SIGNED_IMAGE_PROVENANCE_REJECTED") from exc
+    except (OSError, ValueError, ProvenanceError) as exc:
+        # Safe failure diagnosis: report shape only, never original untrusted
+        # statement content, certificate, credential or JSON payload.
+        raise SystemExit("SIGNED_IMAGE_PROVENANCE_REJECTED: " +
+                         type(exc).__name__) from exc
     print("SIGNED_IMAGE_PROVENANCE_VERIFIED")
 
 
