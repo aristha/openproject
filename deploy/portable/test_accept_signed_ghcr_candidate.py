@@ -9,8 +9,8 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "agent"))
 
-from accept_signed_ghcr_candidate import (IDENTITY, IMAGE_NAME, policy_for,
-                                          run_acceptance)
+from accept_signed_ghcr_candidate import (IDENTITY, IMAGE_NAME, AcceptanceStageError,
+                                          policy_for, run_acceptance, safe_diagnostic)
 from image_provenance import ProvenanceError
 
 
@@ -86,6 +86,57 @@ class RegistryAcceptanceTests(unittest.TestCase):
     def test_missing_runner_binary_fails_closed(self, _binary):
         with self.assertRaisesRegex(ProvenanceError, "executable unavailable"):
             run_acceptance(self.digest, self.source, runner=self.runner)
+
+    @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
+    @mock.patch.dict("accept_signed_ghcr_candidate.os.environ", {"HOME": "/home/runner"})
+    def test_positive_cosign_crypto_failure_classified(self, _binary):
+        def reject(*args, **kwargs):
+            return mock.Mock(returncode=1, stdout=b"SECRET_STDOUT", stderr=b"SECRET_STDERR")
+        with self.assertRaises(AcceptanceStageError) as caught:
+            run_acceptance(self.digest, self.source, runner=reject)
+        self.assertEqual(caught.exception.code, "COSIGN_CRYPTO_REJECTED")
+        msg = safe_diagnostic(caught.exception)
+        self.assertIn("stage=positive code=COSIGN_CRYPTO_REJECTED", msg)
+        self.assertNotIn("SECRET", msg)
+
+    @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
+    @mock.patch.dict("accept_signed_ghcr_candidate.os.environ", {"HOME": "/home/runner"})
+    def test_verified_json_policy_rejection_reports_only_safe_schema(self, _binary):
+        def bad_shape(*args, **kwargs):
+            data = json.dumps([{"payload": "not-base64", "credential": "DO_NOT_LEAK"}]).encode()
+            return mock.Mock(returncode=0, stdout=data)
+        with self.assertRaises(AcceptanceStageError) as caught:
+            run_acceptance(self.digest, self.source, runner=bad_shape)
+        self.assertEqual(caught.exception.code, "VERIFIED_STATEMENT_POLICY_REJECTED")
+        msg = safe_diagnostic(caught.exception)
+        self.assertIn("stage=positive", msg)
+        self.assertIn("schema=keys:payload", msg)
+        self.assertNotIn("DO_NOT_LEAK", msg)
+
+    @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
+    @mock.patch.dict("accept_signed_ghcr_candidate.os.environ", {"HOME": "/home/runner"})
+    def test_crypto_runner_timeout_is_static_error(self, _binary):
+        def timeout(*args, **kwargs):
+            raise __import__("subprocess").TimeoutExpired(cmd="SECRET_COMMAND", timeout=90)
+        with self.assertRaises(AcceptanceStageError) as caught:
+            run_acceptance(self.digest, self.source, runner=timeout)
+        self.assertEqual(caught.exception.code, "COSIGN_EXECUTION_ERROR")
+        self.assertNotIn("SECRET_COMMAND", safe_diagnostic(caught.exception))
+
+    def test_public_diagnostic_never_uses_arbitrary_exception_text(self):
+        self.assertEqual(safe_diagnostic(ProvenanceError("SECRET_PRIVATE")),
+                         "GHCR_SIGNED_PROVENANCE_ACCEPTANCE_FAILED stage=preflight code=INPUT_OR_RUNTIME_REJECTED")
+        self.assertNotIn("SECRET_PRIVATE", safe_diagnostic(ProvenanceError("SECRET_PRIVATE")))
+
+    @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
+    @mock.patch.dict("accept_signed_ghcr_candidate.os.environ", {"HOME": "/home/runner"})
+    def test_negative_signer_failure_is_specific(self, _binary):
+        def all_good(*args, **kwargs):
+            return mock.Mock(returncode=0, stdout=self.stdout)
+        with self.assertRaises(AcceptanceStageError) as caught:
+            run_acceptance(self.digest, self.source, runner=all_good)
+        self.assertEqual(caught.exception.code, "WRONG_SIGNER_ACCEPTED")
+        self.assertIn("stage=negative_signer", safe_diagnostic(caught.exception))
 
     def test_reject_mutable_tag(self):
         with self.assertRaises(ProvenanceError):
