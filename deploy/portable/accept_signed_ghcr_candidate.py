@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 from image_provenance import (IMAGE, ISSUER, ProvenanceError,
                               parse_verified_cosign, verify_image)
+from check_verified_build_attestation import verified_output_schema
 
 SOURCE = re.compile(r"[a-f0-9]{40}\Z")
 DIGEST = re.compile(r"sha256:[a-f0-9]{64}\Z")
@@ -20,6 +21,34 @@ IDENTITY = ("https://github.com/aristha/openproject/.github/workflows/"
             "fork-build-attested-image.yml@refs/heads/dev")
 IMAGE_NAME = "ghcr.io/aristha/openproject@"
 MAX_OUTPUT = 1024 * 1024
+
+
+class AcceptanceStageError(ProvenanceError):
+    """Publicly printable static diagnostic code, never an untrusted error."""
+
+    def __init__(self, stage, code, *, schema=None, detail="GHCR acceptance failed"):
+        self.stage = stage
+        self.code = code
+        self.schema = schema
+        super().__init__(detail)
+
+
+def safe_diagnostic(error):
+    if isinstance(error, AcceptanceStageError):
+        message = ("GHCR_SIGNED_PROVENANCE_ACCEPTANCE_FAILED stage=" +
+                   error.stage + " code=" + error.code)
+        if error.schema is not None:
+            message += " schema=" + error.schema
+        return message
+    return "GHCR_SIGNED_PROVENANCE_ACCEPTANCE_FAILED stage=preflight code=INPUT_OR_RUNTIME_REJECTED"
+
+
+def checked_cosign(runner, command, environment, *, stage):
+    try:
+        return runner(command, capture_output=True, timeout=90,
+                      check=False, env=environment)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AcceptanceStageError(stage, "COSIGN_EXECUTION_ERROR") from exc
 
 
 def policy_for(digest, source):
@@ -47,11 +76,31 @@ def run_acceptance(digest, source, *, runner=subprocess.run):
     # Preserve the runner's GHCR Docker login. The host release agent still
     # uses its own root-owned binary and isolated HOME by default.
     environment = os.environ.copy()
-    # Positive: Cosign verifies Fulcio identity, issuer, signed statement,
-    # image digest and transparency log. Python validates the SLSA subject/SHA.
-    if verify_image(image, policy, runner=runner,
-                    cosign_binary=binary, subprocess_env=environment) is not True:
-        raise ProvenanceError("Verified image did not meet acceptance contract")
+    # Separate cryptographic process errors from verified-statement schema/policy
+    # rejection. Never emit raw Cosign stdout/stderr or untrusted payloads.
+    observed = {}
+    def observed_runner(command, **kwargs):
+        completed = runner(command, **kwargs)
+        observed["returncode"] = completed.returncode
+        observed["stdout"] = completed.stdout
+        return completed
+
+    try:
+        positive = verify_image(
+            image, policy, runner=observed_runner,
+            cosign_binary=binary, subprocess_env=environment)
+    except (ProvenanceError, OSError, subprocess.TimeoutExpired) as exc:
+        if observed.get("returncode") is None:
+            code = "COSIGN_EXECUTION_ERROR"
+        elif observed["returncode"] != 0:
+            code = "COSIGN_CRYPTO_REJECTED"
+        else:
+            code = "VERIFIED_STATEMENT_POLICY_REJECTED"
+        schema = (verified_output_schema(observed["stdout"][:MAX_OUTPUT])
+                  if code == "VERIFIED_STATEMENT_POLICY_REJECTED" else None)
+        raise AcceptanceStageError("positive", code, schema=schema) from exc
+    if positive is not True:
+        raise AcceptanceStageError("positive", "VERIFIED_STATEMENT_POLICY_REJECTED")
 
     # Negative source SHA: a successful signature alone MUST NOT authorize an
     # image whose reviewed builder commit differs from the statement.
@@ -63,27 +112,27 @@ def run_acceptance(digest, source, *, runner=subprocess.run):
         "--certificate-oidc-issuer", ISSUER,
         "--output", "json", image,
     ]
-    completed = runner(statement_command, capture_output=True, timeout=90,
-                       check=False, env=environment)
+    completed = checked_cosign(runner, statement_command, environment,
+                               stage="negative_source")
     if completed.returncode != 0:
-        raise ProvenanceError("Cannot re-verify signed statement for SHA negative test")
+        raise AcceptanceStageError("negative_source", "COSIGN_CRYPTO_REJECTED")
     wrong_policy = dict(policy, build_sha=wrong_source)
     try:
         parse_verified_cosign(completed.stdout, wrong_policy)
     except ProvenanceError:
         pass
     else:
-        raise ProvenanceError("Wrong image-build source was accepted")
+        raise AcceptanceStageError("negative_source", "WRONG_SOURCE_ACCEPTED", detail="Wrong image-build source was accepted")
 
     # Negative signer: exact identity MUST reject a different certificate.
     # The signed image remains unchanged; only the expected signer changes.
     wrong_identity = IDENTITY.replace("@refs/heads/dev", "@refs/heads/not-dev")
     wrong_signer = list(statement_command)
     wrong_signer[wrong_signer.index("--certificate-identity") + 1] = wrong_identity
-    rejected = runner(wrong_signer, capture_output=True, timeout=90,
-                      check=False, env=environment)
+    rejected = checked_cosign(runner, wrong_signer, environment,
+                              stage="negative_signer")
     if rejected.returncode == 0:
-        raise ProvenanceError("Unexpected signer identity was accepted")
+        raise AcceptanceStageError("negative_signer", "WRONG_SIGNER_ACCEPTED", detail="Unexpected signer identity was accepted")
 
     # Negative digest: request a DIFFERENT immutable OCI image digest. A valid
     # attestation must not bind a different image under the same repository.
@@ -93,10 +142,10 @@ def run_acceptance(digest, source, *, runner=subprocess.run):
     other_image = IMAGE_NAME + "sha256:" + other_digest
     wrong_image = list(statement_command)
     wrong_image[-1] = other_image
-    rejected = runner(wrong_image, capture_output=True, timeout=90,
-                      check=False, env=environment)
+    rejected = checked_cosign(runner, wrong_image, environment,
+                              stage="negative_digest")
     if rejected.returncode == 0:
-        raise ProvenanceError("Unexpected image digest was accepted")
+        raise AcceptanceStageError("negative_digest", "WRONG_DIGEST_ACCEPTED", detail="Unexpected image digest was accepted")
 
     return True
 
@@ -108,8 +157,8 @@ def main():
     args = parser.parse_args()
     try:
         run_acceptance(args.image_digest, args.build_sha)
-    except (OSError, subprocess.TimeoutExpired, ProvenanceError, ValueError):
-        print("GHCR_SIGNED_PROVENANCE_ACCEPTANCE_FAILED", file=sys.stderr)
+    except (OSError, subprocess.TimeoutExpired, ProvenanceError, ValueError) as exc:
+        print(safe_diagnostic(exc), file=sys.stderr)
         return 1
     print("GHCR_SIGNED_PROVENANCE_ACCEPTANCE_PASS")
     return 0

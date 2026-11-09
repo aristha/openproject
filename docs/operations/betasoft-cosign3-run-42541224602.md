@@ -56,3 +56,35 @@ A successful read-only verification does not authorize EC2 deployment.
 The `pilot` environment/branch controls, alert acknowledgment, rollback
 rehearsal (#6) and application DR (#5, currently paused by owner) remain
 separate release gates.
+
+## Phase 10 — Read-only verification run #42619905010
+
+The operator ran [read-only acceptance #42619905010](https://github.com/aristha/openproject/actions/runs/42619905010)
+on `dev` at commit `757dc5f99fa089586b9019b8d72d454c5bb36d0c`,
+with the same immutable image digest and build source SHA. GitHub logs show:
+
+- [x] Offline negative tests passed.
+- [x] GHCR read-only login passed.
+- [x] Cosign v3.0.3 installation passed.
+- [ ] `Verify real GHCR image and deliberately reject invalid identities`
+  exited 1, but logged only `GHCR_SIGNED_PROVENANCE_ACCEPTANCE_FAILED`.
+  We cannot yet distinguish cryptographic failure, statement mismatch,
+  verifier output shape or a negative-control failure.
+
+The follow-up repair adds **bounded static stage/error codes**, never raw
+Cosign output, exception messages, tokens or untrusted attestation JSON.
+`stage=positive code=COSIGN_CRYPTO_REJECTED` means the Cosign verification
+process rejected the signature/identity/registry content; the cryptographic
+or registry root cause still requires read-only investigation.
+`stage=positive code=VERIFIED_STATEMENT_POLICY_REJECTED` means Cosign
+returned success but Python rejected a signed statement against the exact
+image/source policy. In that case only a small allowlisted set of JSON field
+**names** is shown as `schema=...`. The other stages are
+`negative_source`, `negative_signer` and `negative_digest`; all
+unexpected success in a negative test remains a hard failure.
+An unavailable executable or timeout gets `COSIGN_EXECUTION_ERROR`.
+
+After merge, rerun **only the read-only verifier** with the **same** digest
+and source SHA, then inspect its new static diagnostic. Do not re-build,
+push, re-sign or deploy the existing candidate. A failing acceptance remains
+a production-release blocker.
