@@ -88,3 +88,31 @@ After merge, rerun **only the read-only verifier** with the **same** digest
 and source SHA, then inspect its new static diagnostic. Do not re-build,
 push, re-sign or deploy the existing candidate. A failing acceptance remains
 a production-release blocker.
+
+## Phase 11 — Run #42626319539 (2026-11-09)
+
+[Read-only verify run #2](https://github.com/aristha/openproject/actions/runs/42626319539)
+at `a088668468d98fdb9cad69c8af65301b2672a43c` failed in
+positive statement acceptance. This time the static output confirmed:
+
+```text
+GHCR_SIGNED_PROVENANCE_ACCEPTANCE_FAILED stage=positive code=VERIFIED_STATEMENT_POLICY_REJECTED schema=keys:payload,payloadType
+```
+
+Cosign exited successfully before the Python policy rejection.
+This confirms the top-level fields include `payloadType` and `payload`,
+but **does not** prove the payload has the expected predicate, subject, or
+source binding. The previous parser already attempted to decode
+`entry["payload"]`; the exact statement mismatch remains unknown.
+
+The follow-up adds explicit strict top-level DSSE payload type validation,
+tests for the observed shape, and a non-sensitive allowlisted cause code:
+`PAYLOAD_DECODE`, `STATEMENT_TYPE`, `PREDICATE_TYPE`,
+`SUBJECT_OR_DIGEST`, or `SOURCE_DEPENDENCY` (among others).
+Never print signed payload, GHCR credentials or arbitrary exception text.
+On a successful read-only rerun, retain the original fail-closed binding
+checks and do not infer automatic deployment authorization.
+
+Use existing `image_digest=sha256:d3fbb478c6e7fd8c6f1201a42904aad512510ca062a8cb7ef207bbe38220ebcd`
+and `build_sha=d9ce44000e50562af43eac44efe6dc172cd39e48`.
+Do not build/push a replacement image solely to diagnose this bug.
