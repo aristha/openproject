@@ -8,7 +8,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "agent"))
 
 from write_slsa_build_predicate import predicate, SOURCE, WORKFLOW
-from check_verified_build_attestation import check
+from check_verified_build_attestation import check, verified_output_schema
 
 
 class SignedBuildContractTests(unittest.TestCase):
@@ -61,6 +61,21 @@ class SignedBuildContractTests(unittest.TestCase):
     def test_reject_unsigned_plain_statement(self):
         with self.assertRaises(ValueError):
             check(json.dumps([{"predicate": self.pred}]).encode(), self.source, self.digest)
+
+    def test_schema_diagnostics_do_not_expose_payload(self):
+        private = json.dumps([{
+            "payload": "SECRET_MUST_NOT_APPEAR",
+            "signature": "ANOTHER_SECRET",
+            "certificate": "CERT_SECRET",
+            "predicateType": "https://slsa.dev/provenance/v1",
+        }]).encode()
+        schema = verified_output_schema(private)
+        self.assertEqual(schema, "keys:payload,predicateType")
+        self.assertNotIn("SECRET", schema)
+
+    def test_schema_invalid_json_fails_safe(self):
+        self.assertEqual(verified_output_schema(b"not-json"), "invalid-json")
+        self.assertEqual(verified_output_schema(b"[]"), "empty-array")
 
     def test_workflow_is_manual_only(self):
         workflow = (pathlib.Path(__file__).resolve().parents[2] /

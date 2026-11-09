@@ -100,7 +100,19 @@ def parse_verified_cosign(result, policy):
         try:
             decoded = base64.b64decode(entry["payload"], validate=True)
             statement = json.loads(decoded)
-        except (binascii.Error, ValueError, UnicodeDecodeError):
+            # Cosign v3 can return a verified DSSE envelope instead of
+            # the decoded in-toto statement returned by older OCI layouts.
+            # Unwrap only the in-toto DSSE type, then validate the SAME
+            # original statement's subject and source; never trust the
+            # envelope's assertions without the successful Cosign process.
+            if isinstance(statement, dict) and "payloadType" in statement:
+                if statement.get("payloadType") != "application/vnd.in-toto+json":
+                    continue
+                inner = statement.get("payload")
+                if not isinstance(inner, str):
+                    continue
+                statement = json.loads(base64.b64decode(inner, validate=True))
+        except (binascii.Error, ValueError, UnicodeDecodeError, TypeError):
             continue
         if verified_statement(statement, digest=digest, build_sha=policy["build_sha"]):
             return True

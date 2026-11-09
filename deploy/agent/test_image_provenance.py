@@ -40,6 +40,46 @@ class ProvenanceTests(unittest.TestCase):
     def test_valid_statement(self):
         self.assertTrue(provenance.parse_verified_cosign(self.encoded(), self.policy))
 
+    def encoded_dsse(self, payload_type="application/vnd.in-toto+json"):
+        inner = base64.b64encode(json.dumps(self.statement).encode()).decode()
+        envelope = {"payloadType": payload_type, "payload": inner,
+                    "signatures": [{"sig": "illustrative-only"}]}
+        return json.dumps([{"payload": base64.b64encode(
+            json.dumps(envelope).encode()).decode()}]).encode()
+
+    def test_valid_verified_dsse_envelope(self):
+        self.assertTrue(provenance.parse_verified_cosign(
+            self.encoded_dsse(), self.policy))
+
+    def test_dsse_wrong_source_fails(self):
+        self.statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]["gitCommit"] = "f" * 40
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.parse_verified_cosign(self.encoded_dsse(), self.policy)
+
+    def test_dsse_wrong_subject_fails(self):
+        self.statement["subject"][0]["digest"]["sha256"] = "e" * 64
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.parse_verified_cosign(self.encoded_dsse(), self.policy)
+
+    def test_dsse_wrong_payload_type_fails(self):
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.parse_verified_cosign(
+                self.encoded_dsse("application/vnd.example+json"), self.policy)
+
+    def test_dsse_malformed_payload_fails(self):
+        envelope = {"payloadType": "application/vnd.in-toto+json",
+                    "payload": "!!!!"}
+        output = json.dumps([{"payload": base64.b64encode(
+            json.dumps(envelope).encode()).decode()}]).encode()
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.parse_verified_cosign(output, self.policy)
+
+    def test_dsse_cosign_nonzero_must_fail(self):
+        def fake_run(command, **kwargs):
+            return mock.Mock(returncode=1, stdout=self.encoded_dsse())
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.verify_image(self.image, self.policy, runner=fake_run)
+
     def test_wrong_subject_digest(self):
         self.statement["subject"][0]["digest"]["sha256"] = "c" * 64
         with self.assertRaises(provenance.ProvenanceError):
