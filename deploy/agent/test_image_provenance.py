@@ -80,6 +80,39 @@ class ProvenanceTests(unittest.TestCase):
         with self.assertRaises(provenance.ProvenanceError):
             provenance.verify_image(self.image, self.policy, runner=fake_run)
 
+    def direct_dsse(self):
+        return json.dumps([{
+            "payloadType": "application/vnd.in-toto+json",
+            "payload": base64.b64encode(json.dumps(self.statement).encode()).decode(),
+        }]).encode()
+
+    def test_direct_cosign3_dsse_statement_passes(self):
+        self.assertTrue(provenance.parse_verified_cosign(self.direct_dsse(), self.policy))
+        self.assertEqual(provenance.verified_statement_diagnostic(
+            self.direct_dsse(), self.policy), "MATCHED_STATEMENT")
+
+    def test_direct_cosign3_dsse_wrong_source_fails(self):
+        self.statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]["gitCommit"] = "f" * 40
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.parse_verified_cosign(self.direct_dsse(), self.policy)
+        self.assertEqual(provenance.verified_statement_diagnostic(
+            self.direct_dsse(), self.policy), "SOURCE_DEPENDENCY")
+
+    def test_direct_cosign3_dsse_wrong_payload_type_fails(self):
+        output = json.loads(self.direct_dsse())
+        output[0]["payloadType"] = "application/x-fake"
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.parse_verified_cosign(json.dumps(output).encode(), self.policy)
+        self.assertEqual(provenance.verified_statement_diagnostic(
+            json.dumps(output).encode(), self.policy), "DSSE_PAYLOAD_TYPE")
+
+    def test_direct_cosign3_dsse_wrong_digest_fails(self):
+        self.statement["subject"][0]["digest"]["sha256"] = "f" * 64
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.parse_verified_cosign(self.direct_dsse(), self.policy)
+        self.assertEqual(provenance.verified_statement_diagnostic(
+            self.direct_dsse(), self.policy), "SUBJECT_OR_DIGEST")
+
     def test_wrong_subject_digest(self):
         self.statement["subject"][0]["digest"]["sha256"] = "c" * 64
         with self.assertRaises(provenance.ProvenanceError):

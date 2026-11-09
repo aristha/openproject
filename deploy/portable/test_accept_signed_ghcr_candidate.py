@@ -110,7 +110,7 @@ class RegistryAcceptanceTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "VERIFIED_STATEMENT_POLICY_REJECTED")
         msg = safe_diagnostic(caught.exception)
         self.assertIn("stage=positive", msg)
-        self.assertIn("schema=keys:payload", msg)
+        self.assertIn("schema=PAYLOAD_DECODE", msg)
         self.assertNotIn("DO_NOT_LEAK", msg)
 
     @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
@@ -122,6 +122,29 @@ class RegistryAcceptanceTests(unittest.TestCase):
             run_acceptance(self.digest, self.source, runner=timeout)
         self.assertEqual(caught.exception.code, "COSIGN_EXECUTION_ERROR")
         self.assertNotIn("SECRET_COMMAND", safe_diagnostic(caught.exception))
+
+    @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
+    @mock.patch.dict("accept_signed_ghcr_candidate.os.environ", {"HOME": "/home/runner"})
+    def test_statement_policy_rejection_identifies_source_dependency(self, _binary):
+        fake_statement = {
+            "_type": "https://in-toto.io/Statement/v1",
+            "predicateType": "https://slsa.dev/provenance/v1",
+            "subject": [{"name": "ghcr.io/aristha/openproject",
+                         "digest": {"sha256": "b" * 64}}],
+            "predicate": {"buildDefinition": {"resolvedDependencies": [
+                {"uri": "git+https://github.com/aristha/openproject",
+                 "digest": {"gitCommit": "c" * 40}}]}}
+        }
+        verified = json.dumps([{"payloadType": "application/vnd.in-toto+json",
+            "payload": base64.b64encode(json.dumps(fake_statement).encode()).decode()
+        }]).encode()
+        def runner(*args, **kwargs):
+            return mock.Mock(returncode=0, stdout=verified)
+        with self.assertRaises(AcceptanceStageError) as caught:
+            run_acceptance(self.digest, self.source, runner=runner)
+        self.assertEqual(caught.exception.schema, "SOURCE_DEPENDENCY")
+        self.assertNotIn("gitCommit", safe_diagnostic(caught.exception))
+        self.assertNotIn("c" * 40, safe_diagnostic(caught.exception))
 
     def test_public_diagnostic_never_uses_arbitrary_exception_text(self):
         self.assertEqual(safe_diagnostic(ProvenanceError("SECRET_PRIVATE")),
