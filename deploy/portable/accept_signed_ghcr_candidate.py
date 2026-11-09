@@ -12,7 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 from image_provenance import (IMAGE, ISSUER, ProvenanceError,
-                              parse_verified_cosign, verify_image)
+                              parse_verified_cosign, verify_image,
+                              verified_statement_diagnostic)
 from check_verified_build_attestation import verified_output_schema
 
 SOURCE = re.compile(r"[a-f0-9]{40}\Z")
@@ -96,7 +97,7 @@ def run_acceptance(digest, source, *, runner=subprocess.run):
             code = "COSIGN_CRYPTO_REJECTED"
         else:
             code = "VERIFIED_STATEMENT_POLICY_REJECTED"
-        schema = (verified_output_schema(observed["stdout"][:MAX_OUTPUT])
+        schema = (verified_statement_diagnostic(observed["stdout"], policy)
                   if code == "VERIFIED_STATEMENT_POLICY_REJECTED" else None)
         raise AcceptanceStageError("positive", code, schema=schema) from exc
     if positive is not True:
