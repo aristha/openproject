@@ -113,6 +113,35 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(provenance.verified_statement_diagnostic(
             self.direct_dsse(), self.policy), "SUBJECT_OR_DIGEST")
 
+    def test_cosign3_standard_statement_v01_accepts_exact_policy(self):
+        self.statement["_type"] = "https://in-toto.io/Statement/v0.1"
+        self.assertTrue(provenance.parse_verified_cosign(self.direct_dsse(), self.policy))
+        self.assertEqual(provenance.verified_statement_diagnostic(
+            self.direct_dsse(), self.policy), "MATCHED_STATEMENT")
+
+    def test_unknown_statement_version_rejected_even_with_valid_sha(self):
+        self.statement["_type"] = "https://in-toto.io/Statement/v0.2"
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.parse_verified_cosign(self.direct_dsse(), self.policy)
+        self.assertEqual(provenance.verified_statement_diagnostic(
+            self.direct_dsse(), self.policy), "STATEMENT_TYPE")
+
+    def test_v01_wrong_source_digest_still_rejected(self):
+        self.statement["_type"] = "https://in-toto.io/Statement/v0.1"
+        self.statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]["gitCommit"] = "e" * 40
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.parse_verified_cosign(self.direct_dsse(), self.policy)
+        self.assertEqual(provenance.verified_statement_diagnostic(
+            self.direct_dsse(), self.policy), "SOURCE_DEPENDENCY")
+
+    def test_v01_wrong_image_digest_still_rejected(self):
+        self.statement["_type"] = "https://in-toto.io/Statement/v0.1"
+        self.statement["subject"][0]["digest"]["sha256"] = "c" * 64
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.parse_verified_cosign(self.direct_dsse(), self.policy)
+        self.assertEqual(provenance.verified_statement_diagnostic(
+            self.direct_dsse(), self.policy), "SUBJECT_OR_DIGEST")
+
     def test_wrong_subject_digest(self):
         self.statement["subject"][0]["digest"]["sha256"] = "c" * 64
         with self.assertRaises(provenance.ProvenanceError):
