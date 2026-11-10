@@ -116,3 +116,34 @@ checks and do not infer automatic deployment authorization.
 Use existing `image_digest=sha256:d3fbb478c6e7fd8c6f1201a42904aad512510ca062a8cb7ef207bbe38220ebcd`
 and `build_sha=d9ce44000e50562af43eac44efe6dc172cd39e48`.
 Do not build/push a replacement image solely to diagnose this bug.
+
+## Phase 12 — Read-only verify run #42727654369 (2026-11-10)
+
+[Manual run #3](https://github.com/aristha/openproject/actions/runs/42727654369)
+on `dev` at merge `ad498cc9271ed12786a4947ed0467b6e7f4bdb44`
+failed with:
+`stage=positive code=VERIFIED_STATEMENT_POLICY_REJECTED schema=STATEMENT_TYPE`.
+
+The verified payload decoded as a JSON statement but failed the Python
+`_type` check. Cosign's own verified process had exited successfully.
+The parser previously allowed only `https://in-toto.io/Statement/v1`.
+However, the in-toto specification and Cosign 3 SLSA v1 examples use
+`https://in-toto.io/Statement/v0.1` independently of
+`predicateType=https://slsa.dev/provenance/v1`.
+References:
+- https://github.com/in-toto/attestation/blob/main/spec/v0.1.0/README.md
+- https://docs.sigstore.dev/cosign/verifying/attestation/
+- https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/slsa_level_3/decisions/006_signing_with_sbom_and_provenance_in_oci/
+
+The parser now allows exactly those two recognized in-toto Statement
+versions (`v0.1` and `v1`) and **does not** relax the required SLSA
+predicate type, image name/digest, source repository/build commit, or
+prior Cosign certificate/issuer/transparency verification. Offline tests
+cover accepted v0.1 and fail-closed unknown statement version, wrong
+source commit and wrong image digest. The candidate image remains
+**unapproved** until a real read-only acceptance run passes, including
+negative controls.
+
+After the PR merges, manually rerun the read-only verification workflow
+with the same existing image digest and source SHA; do not rebuild, push,
+redeploy or turn on the auto-execution gate.
