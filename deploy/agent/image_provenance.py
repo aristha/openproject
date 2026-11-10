@@ -23,6 +23,12 @@ WORKFLOW_ID = re.compile(
     r"[a-zA-Z0-9_.-]+\.ya?ml@refs/heads/dev\Z"
 )
 PREDICATE = "https://slsa.dev/provenance/v1"
+# In-toto Statement v0.1 is still emitted by Cosign v3 for SLSA v1.
+# SLSA predicate version and in-toto statement envelope version are distinct.
+STATEMENT_TYPES = frozenset({
+    "https://in-toto.io/Statement/v0.1",
+    "https://in-toto.io/Statement/v1",
+})
 ISSUER = "https://token.actions.githubusercontent.com"
 SOURCES = {"git+https://github.com/aristha/openproject", "https://github.com/aristha/openproject"}
 MAX_RESULT = 1024 * 1024
@@ -53,7 +59,7 @@ def load_policy(path):
 def verified_statement(statement, *, digest, build_sha):
     if not isinstance(statement, dict):
         return False
-    if (statement.get("_type") != "https://in-toto.io/Statement/v1"
+    if (statement.get("_type") not in STATEMENT_TYPES
             or statement.get("predicateType") != PREDICATE):
         return False
     subjects = statement.get("subject")
@@ -153,7 +159,7 @@ def verified_statement_diagnostic(result, policy):
             return "PAYLOAD_DECODE"
         if not isinstance(statement, dict):
             return "STATEMENT_SHAPE"
-        if statement.get("_type") != "https://in-toto.io/Statement/v1":
+        if statement.get("_type") not in STATEMENT_TYPES:
             return "STATEMENT_TYPE"
         if statement.get("predicateType") != PREDICATE:
             return "PREDICATE_TYPE"
