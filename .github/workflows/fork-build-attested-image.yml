@@ -49,6 +49,8 @@ jobs:
         with:
           context: .
           file: ./docker/prod/Dockerfile
+          target: slim
+          platforms: linux/amd64
           push: true
           tags: ghcr.io/aristha/openproject:attested-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           provenance: mode=min
