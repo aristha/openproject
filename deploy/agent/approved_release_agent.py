@@ -134,6 +134,44 @@ def read_state(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def write_state_atomic(state_dir, prefix, target, record):
+    """Write a root-only JSON record atomically (temp file, fsync, rename)."""
+    fd, temp_path = tempfile.mkstemp(prefix=prefix, dir=state_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as state_out:
+            os.fchmod(state_out.fileno(), 0o600)
+            json.dump(record, state_out, indent=2)
+            state_out.write("\n")
+            state_out.flush()
+            os.fsync(state_out.fileno())
+        os.replace(temp_path, target)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
+def failure_marker_path(state_dir, artifact_sha256):
+    return state_dir / ("deploy-failed-" + artifact_sha256 + ".json")
+
+
+def record_deploy_failure(state_dir, approval, exc):
+    """Block automatic retries of an artifact whose deploy failed. Reason is non-secret."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        reason = "deploy timed out after %ss" % exc.timeout
+    elif isinstance(exc, subprocess.CalledProcessError):
+        reason = "deploy exited with status %s" % exc.returncode
+    else:
+        reason = "deploy failed: " + type(exc).__name__
+    record = {
+        "artifact_sha256": approval["artifact_sha256"],
+        "image": approval["image"],
+        "failed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "reason": reason,
+    }
+    marker = failure_marker_path(state_dir, approval["artifact_sha256"])
+    write_state_atomic(state_dir, ".deploy-failed-", marker, record)
+
+
 def run(args):
     if os.geteuid() != 0:
         reject("Agent must run as root on pilot to use root-only Docker Compose plugin")
@@ -174,6 +212,10 @@ def run(args):
             if not args.execute:
                 print("AGENT_OBSERVE_ONLY verified approved release; nothing deployed")
                 return 0
+            marker = failure_marker_path(state_dir, approval["artifact_sha256"])
+            if read_state(marker) is not None:
+                reject("Previous deployment of this artifact failed; refusing automatic retry. "
+                       "Investigate, then remove " + str(marker) + " to retry")
             if os.environ.get("OPENPROJECT_AGENT_EXECUTE_ENABLED") != "YES":
                 reject("Execution disabled; root-only config must explicitly enable it")
             if not permitted_window(dt.datetime.now(dt.timezone.utc)):
@@ -192,7 +234,16 @@ def run(args):
             }
             cmd = ["/bin/bash", str(deploy), "--execute", approval["image"]]
             print("AGENT_START_APPROVED_RELEASE image=" + approval["image"], flush=True)
-            subprocess.run(cmd, check=True, env=env, timeout=1500)
+            try:
+                subprocess.run(cmd, check=True, env=env, timeout=1500)
+            except Exception as exc:
+                # Without a marker the systemd timer would redeploy the same artifact every tick.
+                try:
+                    record_deploy_failure(state_dir, approval, exc)
+                except OSError as marker_exc:
+                    print("AGENT_WARNING: could not write failure marker: " + str(marker_exc),
+                          file=sys.stderr)
+                raise
             # An atomic state record is committed only on successful deploy.
             record = {
                 "artifact_sha256": approval["artifact_sha256"],
@@ -200,18 +251,7 @@ def run(args):
                 "image": approval["image"],
                 "deployed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             }
-            fd, temp_path = tempfile.mkstemp(prefix=".last-deployed-", dir=state_dir)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as state_out:
-                    os.fchmod(state_out.fileno(), 0o600)
-                    json.dump(record, state_out, indent=2)
-                    state_out.write("\n")
-                    state_out.flush()
-                    os.fsync(state_out.fileno())
-                os.replace(temp_path, state_file)
-            finally:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
+            write_state_atomic(state_dir, ".last-deployed-", state_file, record)
             print("AGENT_DEPLOY_SUCCESS", flush=True)
     return 0
 
