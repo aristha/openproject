@@ -18,6 +18,7 @@ from release_transport import control_file
 
 IMAGE = re.compile(r"ghcr\.io/aristha/openproject@sha256:([a-f0-9]{64})\Z")
 SHA = re.compile(r"[a-f0-9]{40}\Z")
+REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.][A-Za-z0-9_.-]*\Z")
 WORKFLOW_ID = re.compile(
     r"https://github\.com/aristha/openproject/\.github/workflows/"
     r"[a-zA-Z0-9_.-]+\.ya?ml@refs/heads/dev\Z"
@@ -36,6 +37,25 @@ MAX_RESULT = 1024 * 1024
 
 class ProvenanceError(ValueError):
     pass
+
+
+def certificate_binding_args(policy):
+    """Cosign flags binding the Fulcio certificate to the approved build commit.
+
+    The attestation is signed by the BUILD workflow run, whose GITHUB_SHA is the
+    commit it checked out and recorded as the predicate's gitCommit (the build
+    workflow asserts HEAD == GITHUB_SHA). policy["build_sha"] is that commit, so
+    it is the value the certificate's GitHub workflow SHA/repository extensions
+    must carry. Validated before any cosign process is started.
+    """
+    sha = policy.get("build_sha")
+    repository = policy.get("source_repository")
+    if not isinstance(sha, str) or not SHA.fullmatch(sha):
+        raise ProvenanceError("Build SHA must be 40 lowercase hex characters")
+    if not isinstance(repository, str) or not REPOSITORY.fullmatch(repository):
+        raise ProvenanceError("Source repository must be owner/repo")
+    return ["--certificate-github-workflow-sha", sha,
+            "--certificate-github-workflow-repository", repository]
 
 
 def load_policy(path):
@@ -194,7 +214,7 @@ def verify_image(image, policy, *, runner=subprocess.run,
     # GitHub acceptance may explicitly supply a resolved runner-installed binary
     # and its Docker credential environment. Never take this path from a release.
     if (not isinstance(cosign_binary, str) or not cosign_binary.startswith("/")
-            or "\\x00" in cosign_binary):
+            or "\x00" in cosign_binary):
         raise ProvenanceError("Cosign binary must be an absolute path")
     if subprocess_env is None:
         subprocess_env = {"PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -206,6 +226,7 @@ def verify_image(image, policy, *, runner=subprocess.run,
         "--type", "slsaprovenance1",
         "--certificate-identity", policy["certificate_identity"],
         "--certificate-oidc-issuer", ISSUER,
+        *certificate_binding_args(policy),
         "--output", "json", image,
     ]
     # Do not allow insecure-ignore-tlog, insecure-ignore-sct, --key, --check-claims=false.
