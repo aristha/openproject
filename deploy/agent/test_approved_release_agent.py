@@ -170,6 +170,87 @@ class AgentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             agent.require_root_owned_dir(link)
 
+    def execute_args(self):
+        return mock.Mock(inbox=str(self.inbox), state_dir=str(self.state),
+                         deploy_root=str(self.root), backup_hook="/tmp/fake-backup", execute=True)
+
+    def run_execute(self, deploy_effect=None):
+        """Run an --execute cycle with every host-specific gate patched; returns (rc_or_exc, run mock)."""
+        fake_stat = mock.Mock(st_uid=0, st_mode=0o100600)
+        with mock.patch.object(agent.os, "geteuid", return_value=0), \
+             mock.patch.object(agent, "require_root_owned_dir"), \
+             mock.patch.object(agent, "require_root_executable"), \
+             mock.patch.object(agent, "read_approval", return_value=self.approval), \
+             mock.patch.object(agent, "require_root_lock"), \
+             mock.patch.object(agent, "permitted_window", return_value=True), \
+             mock.patch.object(Path, "lstat", return_value=fake_stat), \
+             mock.patch.dict(agent.os.environ, {"OPENPROJECT_AGENT_EXECUTE_ENABLED": "YES"}), \
+             mock.patch.object(agent.subprocess, "run", side_effect=deploy_effect) as run:
+            try:
+                return agent.run(self.execute_args()), run
+            except Exception as exc:
+                return exc, run
+
+    def marker(self, digest=None):
+        return self.state / ("deploy-failed-" + (digest or self.approval["artifact_sha256"]) + ".json")
+
+    def test_failed_deploy_writes_marker(self):
+        failure = agent.subprocess.CalledProcessError(3, ["deploy.sh"])
+        result, run = self.run_execute(failure)
+        self.assertIsInstance(result, agent.subprocess.CalledProcessError)
+        run.assert_called_once()
+        record = json.loads(self.marker().read_text())
+        self.assertEqual(record["artifact_sha256"], self.approval["artifact_sha256"])
+        self.assertEqual(record["image"], self.image)
+        self.assertIn("status 3", record["reason"])
+        self.assertIn("failed_at", record)
+        self.assertEqual(self.marker().stat().st_mode & 0o777, 0o600)
+        self.assertFalse((self.state / "last-deployed.json").exists())
+        self.assertEqual([p.name for p in self.state.iterdir() if p.name.startswith(".")], [])
+
+    def test_second_run_after_failure_is_refused_without_deploy(self):
+        self.run_execute(agent.subprocess.CalledProcessError(1, ["deploy.sh"]))
+        result, run = self.run_execute()
+        self.assertIsInstance(result, ValueError)
+        self.assertIn("remove", str(result))
+        self.assertIn(str(self.marker()), str(result))
+        run.assert_not_called()
+
+    def test_different_artifact_is_not_blocked(self):
+        self.run_execute(agent.subprocess.CalledProcessError(1, ["deploy.sh"]))
+        failed_marker = self.marker()
+        self.release["source_sha"] = "c" * 40
+        self.approval["source_sha"] = "c" * 40
+        self.write_zip()
+        self.assertNotEqual(self.marker(), failed_marker)
+        self.assertTrue(failed_marker.exists())
+        result, run = self.run_execute(lambda *a, **k: None)
+        self.assertEqual(result, 0)
+        run.assert_called_once()
+
+    def test_success_leaves_no_marker(self):
+        result, run = self.run_execute(lambda *a, **k: None)
+        self.assertEqual(result, 0)
+        run.assert_called_once()
+        self.assertFalse(self.marker().exists())
+        self.assertTrue((self.state / "last-deployed.json").exists())
+
+    def test_timeout_writes_marker(self):
+        result, _ = self.run_execute(agent.subprocess.TimeoutExpired(["deploy.sh"], 1500))
+        self.assertIsInstance(result, agent.subprocess.TimeoutExpired)
+        self.assertIn("timed out", json.loads(self.marker().read_text())["reason"])
+
+    def test_observe_only_writes_no_marker(self):
+        args = self.execute_args()
+        args.execute = False
+        with mock.patch.object(agent.os, "geteuid", return_value=0), \
+             mock.patch.object(agent, "require_root_owned_dir"), \
+             mock.patch.object(agent, "read_approval", return_value=self.approval), \
+             mock.patch.object(agent, "require_root_lock"), \
+             mock.patch.object(agent.subprocess, "run") as run:
+            self.assertEqual(agent.run(args), 0)
+            run.assert_not_called()
+        self.assertEqual(list(self.state.glob("deploy-failed-*")), [])
 
 
 from zoneinfo import ZoneInfo
