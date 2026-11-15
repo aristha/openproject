@@ -42,10 +42,10 @@ backup scripts, configure:
 ```bash
 chmod 700 ./aws-s3-backup.sh
 export DEPLOY_ROOT=/opt/openproject-pilot
-export DEPLOY_HOST=projects.betajapansoftware.com
+export DEPLOY_HOST=<APP_HOSTNAME>
 export DEPLOY_HEALTH_URL=http://127.0.0.1:8080/health_check
 export DEPLOY_BACKUP_HOOK="$(pwd)/aws-s3-backup.sh"
-export S3_BACKUP_BUCKET=betasoft-openproject-backups-080891697921-ap-southeast-2-an
+export S3_BACKUP_BUCKET=<BUCKET_1>
 export AWS_REGION=ap-southeast-2
 export DEPLOY_SCHEMA_APPROVED=NO_MIGRATIONS
 sudo --preserve-env=DEPLOY_ROOT,DEPLOY_HOST,DEPLOY_HEALTH_URL,DEPLOY_BACKUP_HOOK,S3_BACKUP_BUCKET,AWS_REGION,DEPLOY_SCHEMA_APPROVED \
@@ -151,7 +151,7 @@ sudo install -D -m 0644 deploy/systemd/betasoft-openproject-backup.timer \
   /etc/systemd/system/betasoft-openproject-backup.timer
 sudo install -d -m 0700 /etc/betasoft
 printf 'S3_BACKUP_BUCKET=%s\n' \
-  'betasoft-openproject-backups-080891697921-ap-southeast-2-an' \
+  '<BUCKET_1>' \
   | sudo tee /etc/betasoft/openproject-backup.env >/dev/null
 sudo chmod 0600 /etc/betasoft/openproject-backup.env
 sudo systemd-analyze calendar 'Mon..Fri *-*-* 17:45:00 Asia/Ho_Chi_Minh'
