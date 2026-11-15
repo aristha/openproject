@@ -84,12 +84,16 @@ jobs:
         shell: bash
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           export PYTHONPATH=deploy/agent
           cosign verify-attestation --type slsaprovenance1 \
             --certificate-identity "https://github.com/aristha/openproject/.github/workflows/fork-build-attested-image.yml@refs/heads/dev" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-sha "$BUILD_SHA" \
+            --certificate-github-workflow-repository "$BUILD_REPOSITORY" \
             --output json "ghcr.io/aristha/openproject@$IMAGE_DIGEST" \
             > "$RUNNER_TEMP/openproject-verified-attestation.json"
           python3 deploy/portable/check_verified_build_attestation.py \
