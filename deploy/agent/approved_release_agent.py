@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -30,6 +31,24 @@ HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 IMAGE = re.compile(r"ghcr\.io/aristha/openproject@sha256:[0-9a-f]{64}\Z")
 BUNDLE_NAMES = FILES | {"SHA256SUMS"}
+DEPLOY_TIMEOUT_SECONDS = 1500
+DEPLOY_TERM_GRACE_SECONDS = 300
+MAX_TERM_GRACE_SECONDS = 3600
+EXIT_DEPLOY_TIMEOUT = 124
+DEFAULT_PROVENANCE_POLICY = "/etc/betasoft/release-transport/image-provenance.json"
+DEFAULT_ALERT_SPOOL = "/var/lib/betasoft-release-agent/alerts"
+
+
+class DeployTimeout(subprocess.TimeoutExpired):
+    """Deploy exceeded its deadline; `killed` is True when SIGKILL was needed after the grace."""
+
+    def __init__(self, cmd, timeout, killed):
+        super().__init__(cmd, timeout)
+        self.killed = killed
+
+
+class ProvenanceGateError(ValueError):
+    pass
 
 
 def reject(reason):
@@ -154,9 +173,72 @@ def failure_marker_path(state_dir, artifact_sha256):
     return state_dir / ("deploy-failed-" + artifact_sha256 + ".json")
 
 
+def signal_group(pgid, sig):
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def terminate_group(proc, grace):
+    """SIGTERM the whole process group, wait `grace`, then SIGKILL it. Returns True if killed."""
+    signal_group(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=grace)
+        return False
+    except subprocess.TimeoutExpired:
+        signal_group(proc.pid, signal.SIGKILL)
+        proc.wait()
+        return True
+
+
+def run_deploy(cmd, env, timeout=DEPLOY_TIMEOUT_SECONDS, grace=DEPLOY_TERM_GRACE_SECONDS):
+    """Run deploy in its own process group so a deadline can trigger its rollback traps.
+
+    Raises DeployTimeout on deadline and CalledProcessError on non-zero exit.
+    """
+    proc = subprocess.Popen(cmd, env=env, start_new_session=True)
+    try:
+        returncode = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise DeployTimeout(cmd, timeout, terminate_group(proc, grace)) from None
+    except BaseException:
+        terminate_group(proc, grace)
+        raise
+    if returncode != 0:
+        raise subprocess.CalledProcessError(returncode, cmd)
+
+
+def verify_provenance(approval, policy_path):
+    """Fail closed: the approved image must carry verified signed provenance before deploy."""
+    try:
+        if not policy_path:
+            raise ProvenanceGateError("no provenance policy configured")
+        from image_provenance import load_policy, verify_image
+        verify_image(approval["image"], load_policy(policy_path))
+    except Exception as exc:
+        raise ProvenanceGateError("Image provenance verification failed: " + type(exc).__name__) from exc
+
+
+def emit_failure_alert(alerts_dir):
+    """Spool an alert for alert_dispatch. A delivery problem must never mask the original error."""
+    try:
+        # Late import: release_transport imports this module.
+        from release_transport import alert_spool
+        alert_spool(Path(alerts_dir))
+    except Exception as alert_exc:
+        print("AGENT_WARNING: could not spool failure alert: " + type(alert_exc).__name__,
+              file=sys.stderr)
+
+
 def record_deploy_failure(state_dir, approval, exc):
     """Block automatic retries of an artifact whose deploy failed. Reason is non-secret."""
-    if isinstance(exc, subprocess.TimeoutExpired):
+    if isinstance(exc, ProvenanceGateError):
+        reason = "image provenance verification failed"
+    elif isinstance(exc, DeployTimeout):
+        reason = "deploy timed out after %ss; %s" % (
+            exc.timeout, "SIGKILL after grace expired" if exc.killed else "exited after SIGTERM")
+    elif isinstance(exc, subprocess.TimeoutExpired):
         reason = "deploy timed out after %ss" % exc.timeout
     elif isinstance(exc, subprocess.CalledProcessError):
         reason = "deploy exited with status %s" % exc.returncode
@@ -233,9 +315,10 @@ def run(args):
                 "DEPLOY_SCHEMA_APPROVED": "NO_MIGRATIONS",
             }
             cmd = ["/bin/bash", str(deploy), "--execute", approval["image"]]
-            print("AGENT_START_APPROVED_RELEASE image=" + approval["image"], flush=True)
             try:
-                subprocess.run(cmd, check=True, env=env, timeout=1500)
+                verify_provenance(approval, args.provenance_policy)
+                print("AGENT_START_APPROVED_RELEASE image=" + approval["image"], flush=True)
+                run_deploy(cmd, env, args.deploy_timeout, args.term_grace)
             except Exception as exc:
                 # Without a marker the systemd timer would redeploy the same artifact every tick.
                 try:
@@ -243,6 +326,7 @@ def run(args):
                 except OSError as marker_exc:
                     print("AGENT_WARNING: could not write failure marker: " + str(marker_exc),
                           file=sys.stderr)
+                emit_failure_alert(args.alerts)
                 raise
             # An atomic state record is committed only on successful deploy.
             record = {
@@ -263,9 +347,19 @@ def main():
     parser.add_argument("--deploy-root", default="/opt/openproject-pilot")
     parser.add_argument("--backup-hook", default="/usr/local/libexec/betasoft-aws-s3-backup.sh")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--provenance-policy", default=DEFAULT_PROVENANCE_POLICY)
+    parser.add_argument("--alerts", default=DEFAULT_ALERT_SPOOL)
+    parser.add_argument("--deploy-timeout", type=int, default=DEPLOY_TIMEOUT_SECONDS)
+    parser.add_argument("--term-grace", type=int, default=DEPLOY_TERM_GRACE_SECONDS,
+                        help="seconds between SIGTERM (rollback) and SIGKILL on deploy timeout")
     args = parser.parse_args()
+    if not 0 < args.deploy_timeout <= 86400 or not 0 < args.term_grace <= MAX_TERM_GRACE_SECONDS:
+        parser.error("deploy timeout/grace out of range")
     try:
         return run(args)
+    except DeployTimeout as exc:
+        print("AGENT_DEPLOY_TIMEOUT: " + str(exc), file=sys.stderr)
+        return EXIT_DEPLOY_TIMEOUT
     except (ValueError, OSError, subprocess.SubprocessError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
         print("AGENT_REJECTED: " + str(exc), file=sys.stderr)
         return 1

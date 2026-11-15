@@ -4,11 +4,19 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import release_transport
 
 spec = importlib.util.spec_from_file_location(
     "approved_release_agent", Path(__file__).with_name("approved_release_agent.py")
@@ -172,9 +180,11 @@ class AgentTests(unittest.TestCase):
 
     def execute_args(self):
         return mock.Mock(inbox=str(self.inbox), state_dir=str(self.state),
-                         deploy_root=str(self.root), backup_hook="/tmp/fake-backup", execute=True)
+                         deploy_root=str(self.root), backup_hook="/tmp/fake-backup", execute=True,
+                         provenance_policy="/fake/policy.json", alerts=str(self.root / "alerts"),
+                         deploy_timeout=1500, term_grace=300)
 
-    def run_execute(self, deploy_effect=None):
+    def run_execute(self, deploy_effect=None, provenance_effect=None, alert=True):
         """Run an --execute cycle with every host-specific gate patched; returns (rc_or_exc, run mock)."""
         fake_stat = mock.Mock(st_uid=0, st_mode=0o100600)
         with mock.patch.object(agent.os, "geteuid", return_value=0), \
@@ -185,7 +195,9 @@ class AgentTests(unittest.TestCase):
              mock.patch.object(agent, "permitted_window", return_value=True), \
              mock.patch.object(Path, "lstat", return_value=fake_stat), \
              mock.patch.dict(agent.os.environ, {"OPENPROJECT_AGENT_EXECUTE_ENABLED": "YES"}), \
-             mock.patch.object(agent.subprocess, "run", side_effect=deploy_effect) as run:
+             mock.patch.object(agent, "verify_provenance", side_effect=provenance_effect) as self.prov, \
+             mock.patch.object(agent, "emit_failure_alert") as self.alert, \
+             mock.patch.object(agent, "run_deploy", side_effect=deploy_effect) as run:
             try:
                 return agent.run(self.execute_args()), run
             except Exception as exc:
@@ -251,6 +263,178 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(agent.run(args), 0)
             run.assert_not_called()
         self.assertEqual(list(self.state.glob("deploy-failed-*")), [])
+
+    def test_provenance_failure_blocks_deploy_with_marker_and_alert(self):
+        failure = agent.ProvenanceGateError("Image provenance verification failed: ProvenanceError")
+        result, run = self.run_execute(provenance_effect=failure)
+        self.assertIs(result, failure)
+        run.assert_not_called()
+        self.assertIn("provenance", json.loads(self.marker().read_text())["reason"])
+        self.alert.assert_called_once_with(str(self.root / "alerts"))
+        self.assertFalse((self.state / "last-deployed.json").exists())
+
+    def test_provenance_checked_before_deploy_with_approved_image(self):
+        order = []
+        self.run_execute(lambda *a, **k: order.append("deploy"), lambda *a, **k: order.append("prov"))
+        self.assertEqual(order, ["prov", "deploy"])
+        self.prov.assert_called_once_with(self.approval, "/fake/policy.json")
+
+    def test_alert_on_deploy_failure_and_timeout_but_not_success(self):
+        self.run_execute(agent.subprocess.CalledProcessError(2, ["deploy.sh"]))
+        self.alert.assert_called_once()
+        self.marker().unlink()
+        self.run_execute(agent.DeployTimeout(["deploy.sh"], 1500, True))
+        self.alert.assert_called_once()
+        self.assertIn("SIGKILL", json.loads(self.marker().read_text())["reason"])
+        self.marker().unlink()
+        self.run_execute(lambda *a, **k: None)
+        self.alert.assert_not_called()
+
+    def test_alert_spool_failure_does_not_mask_original_error(self):
+        failure = agent.subprocess.CalledProcessError(7, ["deploy.sh"])
+        fake_stat = mock.Mock(st_uid=0, st_mode=0o100600)
+        with mock.patch.object(agent.os, "geteuid", return_value=0), \
+             mock.patch.object(agent, "require_root_owned_dir"), \
+             mock.patch.object(agent, "require_root_executable"), \
+             mock.patch.object(agent, "read_approval", return_value=self.approval), \
+             mock.patch.object(agent, "require_root_lock"), \
+             mock.patch.object(agent, "permitted_window", return_value=True), \
+             mock.patch.object(Path, "lstat", return_value=fake_stat), \
+             mock.patch.dict(agent.os.environ, {"OPENPROJECT_AGENT_EXECUTE_ENABLED": "YES"}), \
+             mock.patch.object(agent, "verify_provenance"), \
+             mock.patch.object(agent, "run_deploy", side_effect=failure), \
+             mock.patch.object(release_transport, "alert_spool", side_effect=OSError("disk full")) as spool, \
+             mock.patch.object(sys, "stderr", new_callable=io.StringIO) as err:
+            with self.assertRaises(agent.subprocess.CalledProcessError) as caught:
+                agent.run(self.execute_args())
+        self.assertIs(caught.exception, failure)
+        spool.assert_called_once()
+        self.assertIn("OSError", err.getvalue())
+        self.assertNotIn("disk full", err.getvalue())
+        self.assertIn("status 7", json.loads(self.marker().read_text())["reason"])
+
+    def test_alert_spool_uses_existing_alert_dispatch_schema(self):
+        with mock.patch.object(release_transport, "require_root_owned_dir"):
+            agent.emit_failure_alert(self.state)
+        (alert,) = self.state.glob("alert-*.json")
+        self.assertEqual(json.loads(alert.read_text())["component"], "release-transport")
+
+    def test_verify_provenance_passes_image_and_loaded_policy(self):
+        import image_provenance
+        policy = {"image": self.image}
+        with mock.patch.object(image_provenance, "load_policy", return_value=policy) as load, \
+             mock.patch.object(image_provenance, "verify_image", return_value=True) as verify:
+            agent.verify_provenance(self.approval, "/p.json")
+        load.assert_called_once_with("/p.json")
+        verify.assert_called_once_with(self.image, policy)
+
+    def test_verify_provenance_fails_closed(self):
+        import image_provenance
+        with self.assertRaises(agent.ProvenanceGateError):
+            agent.verify_provenance(self.approval, None)
+        with mock.patch.object(image_provenance, "load_policy", return_value={}), \
+             mock.patch.object(image_provenance, "verify_image",
+                               side_effect=image_provenance.ProvenanceError("secret-detail")):
+            with self.assertRaises(agent.ProvenanceGateError) as caught:
+                agent.verify_provenance(self.approval, "/p.json")
+        self.assertNotIn("secret-detail", str(caught.exception))
+
+    def test_main_returns_distinct_code_on_timeout(self):
+        with mock.patch.object(agent, "run", side_effect=agent.DeployTimeout(["x"], 5, False)), \
+             mock.patch.object(sys, "argv", ["agent"]), \
+             mock.patch.object(sys, "stderr", new_callable=io.StringIO):
+            self.assertEqual(agent.main(), agent.EXIT_DEPLOY_TIMEOUT)
+
+
+class RunDeployTests(unittest.TestCase):
+    def fake_proc(self, waits):
+        proc = mock.Mock(pid=4242)
+        proc.wait.side_effect = waits
+        return proc
+
+    def run_with(self, waits):
+        proc = self.fake_proc(waits)
+        with mock.patch.object(agent.subprocess, "Popen", return_value=proc) as popen, \
+             mock.patch.object(agent.os, "killpg") as killpg:
+            try:
+                agent.run_deploy(["deploy.sh"], {}, timeout=10, grace=7)
+                exc = None
+            except BaseException as caught:
+                exc = caught
+        return exc, popen, killpg, proc
+
+    def test_timeout_sends_term_then_kill_after_grace(self):
+        expired = agent.subprocess.TimeoutExpired
+        exc, popen, killpg, proc = self.run_with([expired("c", 10), expired("c", 7), 0])
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertEqual(killpg.call_args_list,
+                         [mock.call(4242, signal.SIGTERM), mock.call(4242, signal.SIGKILL)])
+        self.assertEqual([c.kwargs.get("timeout") for c in proc.wait.call_args_list], [10, 7, None])
+        self.assertIsInstance(exc, agent.DeployTimeout)
+        self.assertTrue(exc.killed)
+        self.assertEqual(exc.timeout, 10)
+
+    def test_exit_within_grace_is_not_killed(self):
+        exc, _, killpg, _ = self.run_with([agent.subprocess.TimeoutExpired("c", 10), 143])
+        self.assertEqual(killpg.call_args_list, [mock.call(4242, signal.SIGTERM)])
+        self.assertIsInstance(exc, agent.DeployTimeout)
+        self.assertFalse(exc.killed)
+
+    def test_nonzero_exit_raises_called_process_error_without_signals(self):
+        exc, _, killpg, _ = self.run_with([3])
+        self.assertIsInstance(exc, agent.subprocess.CalledProcessError)
+        self.assertEqual(exc.returncode, 3)
+        killpg.assert_not_called()
+
+    def test_success_returns_none(self):
+        exc, _, killpg, _ = self.run_with([0])
+        self.assertIsNone(exc)
+        killpg.assert_not_called()
+
+    def test_interrupt_terminates_group_and_reraises(self):
+        exc, _, killpg, _ = self.run_with([KeyboardInterrupt(), 0])
+        self.assertIsInstance(exc, KeyboardInterrupt)
+        self.assertEqual(killpg.call_args_list, [mock.call(4242, signal.SIGTERM)])
+
+
+class RealProcessGroupTests(unittest.TestCase):
+    """Real bash scripts prove the TERM trap runs and the group is killed only after the grace."""
+
+    def script(self, body):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        path = Path(d.name) / "deploy.sh"
+        path.write_text("#!/bin/bash\n" + body)
+        return Path(d.name), path
+
+    def test_term_trap_runs_before_deadline_kill(self):
+        out, script = self.script('trap \'echo rolled-back > "$1/rollback"; exit 143\' TERM\n'
+                                  'sleep 30 & wait\n')
+        with self.assertRaises(agent.DeployTimeout) as caught:
+            agent.run_deploy(["/bin/bash", str(script), str(out)], {"PATH": os.environ["PATH"]},
+                             timeout=1, grace=10)
+        self.assertFalse(caught.exception.killed)
+        self.assertEqual((out / "rollback").read_text().strip(), "rolled-back")
+
+    def test_ignoring_term_gets_group_killed_after_grace(self):
+        out, script = self.script('trap \'\' TERM\n(trap \'\' TERM; echo $BASHPID > "$1/child"; sleep 60) &\n'
+                                  'while :; do sleep 1; done\n')
+        started = time.monotonic()
+        with self.assertRaises(agent.DeployTimeout) as caught:
+            agent.run_deploy(["/bin/bash", str(script), str(out)], {"PATH": os.environ["PATH"]},
+                             timeout=1, grace=2)
+        self.assertTrue(caught.exception.killed)
+        self.assertGreaterEqual(time.monotonic() - started, 2.5)
+        child = int((out / "child").read_text())
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("child of deploy group survived SIGKILL")
 
 
 from zoneinfo import ZoneInfo
