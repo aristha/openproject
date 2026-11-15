@@ -49,6 +49,13 @@ class RegistryAcceptanceTests(unittest.TestCase):
         self.assertTrue(all("--certificate-identity" in c for c in self.calls))
         self.assertTrue(all("--certificate-oidc-issuer" in c for c in self.calls))
         self.assertTrue(all("--insecure-ignore-tlog" not in c for c in self.calls))
+        # Every cosign verification binds the certificate to the build commit.
+        for call in self.calls:
+            self.assertEqual(call[call.index("--certificate-github-workflow-sha") + 1],
+                             self.source)
+            self.assertEqual(
+                call[call.index("--certificate-github-workflow-repository") + 1],
+                "aristha/openproject")
 
     @mock.patch("accept_signed_ghcr_candidate.shutil.which", return_value="/home/runner/.cosign/cosign")
     @mock.patch.dict("accept_signed_ghcr_candidate.os.environ", {"HOME": "/home/runner", "DOCKER_CONFIG": "/home/runner/.docker"})

@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 from image_provenance import (IMAGE, ISSUER, ProvenanceError,
+                              certificate_binding_args,
                               parse_verified_cosign, verify_image,
                               verified_statement_diagnostic)
 from check_verified_build_attestation import verified_output_schema
@@ -111,6 +112,7 @@ def run_acceptance(digest, source, *, runner=subprocess.run):
         "--type", "slsaprovenance1",
         "--certificate-identity", IDENTITY,
         "--certificate-oidc-issuer", ISSUER,
+        *certificate_binding_args(policy),
         "--output", "json", image,
     ]
     completed = checked_cosign(runner, statement_command, environment,

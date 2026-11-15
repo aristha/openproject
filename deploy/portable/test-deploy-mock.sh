@@ -36,10 +36,13 @@ cat > "$TEST_ROOT/backup" <<'SH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 printf 'backup\n' >> "$MOCK_LOG"
+if [[ "${MOCK_SIGNAL_IN_BACKUP:-}" != "" ]]; then kill -s "$MOCK_SIGNAL_IN_BACKUP" "$PPID"; fi
 if [[ "${MOCK_FAIL_BACKUP:-0}" == 1 ]]; then exit 7; fi
 SH
 cat > "$TEST_ROOT/bin/sleep" <<'SH'
 #!/usr/bin/env bash
+# Deliver a signal to deploy.sh (our parent) while it waits between health polls.
+if [[ "${MOCK_SIGNAL_ON_SLEEP:-}" != "" ]]; then kill -s "$MOCK_SIGNAL_ON_SLEEP" "$PPID"; fi
 exit 0
 SH
 chmod 700 "$TEST_ROOT/bin/docker" "$TEST_ROOT/bin/curl" "$TEST_ROOT/bin/sleep" "$TEST_ROOT/backup"
@@ -102,4 +105,55 @@ if MOCK_HEALTH_HTTP=301 bash "$SCRIPT" --execute "$IMAGE"; then
 fi
 grep -q 'X-Forwarded-Proto: https' "$MOCK_LOG" || die "Forwarded scheme not sent"
 grep -q '^docker compose .*up -d --no-deps web worker' "$MOCK_LOG" || die "Redirect did not trigger rollback"
-echo "MOCK_DEPLOY_PASS: schema gate, backup fail-closed, rollback, strict 200, success"
+# SIGTERM during the health-check wait: restore previous override, roll back once,
+# release the lock and exit non-zero (143 = 128 + SIGTERM).
+printf 'services:\n  web:\n    image: old\n  worker:\n    image: old\n' > "$DEPLOY_ROOT/compose.deploy.yaml"
+cp "$DEPLOY_ROOT/compose.deploy.yaml" "$TEST_ROOT/old"
+: > "$MOCK_LOG"
+rc=0
+MOCK_HEALTH_HTTP=503 MOCK_SIGNAL_ON_SLEEP=TERM bash "$SCRIPT" --execute "$IMAGE" 2> "$TEST_ROOT/err" || rc=$?
+[[ "$rc" == 143 ]] || die "SIGTERM during health wait exited $rc, expected 143"
+cmp "$DEPLOY_ROOT/compose.deploy.yaml" "$TEST_ROOT/old" || die "SIGTERM did not restore previous override"
+[[ "$(grep -c 'Attempting image-only rollback' "$TEST_ROOT/err")" == 1 ]] || die "Rollback message not printed exactly once"
+grep -q 'DEPLOY_INTERRUPTED signal=TERM rollback=attempted' "$TEST_ROOT/err" || die "Missing distinct interruption message"
+# Exactly two recreates: the deployment itself and one rollback (no double rollback).
+[[ "$(grep -c '^docker compose .*up -d --no-deps web worker' "$MOCK_LOG")" == 2 ]] || die "Rollback commands not invoked exactly once"
+[[ ! -e "$DEPLOY_LOCK_FILE" ]] || die "Lock file left behind after SIGTERM"
+
+# Same, without a previous override: the new override must be removed.
+rm -f "$DEPLOY_ROOT/compose.deploy.yaml"
+: > "$MOCK_LOG"
+rc=0
+MOCK_HEALTH_HTTP=503 MOCK_SIGNAL_ON_SLEEP=INT bash "$SCRIPT" --execute "$IMAGE" 2> "$TEST_ROOT/err" || rc=$?
+[[ "$rc" == 130 ]] || die "SIGINT during health wait exited $rc, expected 130"
+[[ ! -e "$DEPLOY_ROOT/compose.deploy.yaml" ]] || die "SIGINT left a newly created override"
+[[ "$(grep -c 'Attempting image-only rollback' "$TEST_ROOT/err")" == 1 ]] || die "SIGINT rollback not exactly once"
+[[ ! -e "$DEPLOY_LOCK_FILE" ]] || die "Lock file left behind after SIGINT"
+
+# SIGTERM before any change (delivered while the backup hook runs): no rollback.
+printf 'services:\n  web:\n    image: old\n  worker:\n    image: old\n' > "$DEPLOY_ROOT/compose.deploy.yaml"
+cp "$DEPLOY_ROOT/compose.deploy.yaml" "$TEST_ROOT/old"
+: > "$MOCK_LOG"
+rc=0
+MOCK_SIGNAL_IN_BACKUP=TERM bash "$SCRIPT" --execute "$IMAGE" 2> "$TEST_ROOT/err" || rc=$?
+[[ "$rc" == 143 ]] || die "SIGTERM before changes exited $rc, expected 143"
+cmp "$DEPLOY_ROOT/compose.deploy.yaml" "$TEST_ROOT/old" || die "Override modified by pre-change SIGTERM"
+! grep -q 'up -d' "$MOCK_LOG" || die "Containers touched by pre-change SIGTERM"
+! grep -q 'Attempting image-only rollback' "$TEST_ROOT/err" || die "Rollback ran although nothing changed"
+! grep -q '^docker pull ' "$MOCK_LOG" || die "Pulled image after pre-change SIGTERM"
+[[ ! -e "$DEPLOY_LOCK_FILE" ]] || die "Lock file left behind after pre-change SIGTERM"
+
+# A rejected second deploy must not delete the running deploy's lock file.
+exec 8>"$DEPLOY_LOCK_FILE"
+flock -n 8
+if bash "$SCRIPT" --execute "$IMAGE" 2>/dev/null; then die "Concurrent deploy accepted"; fi
+[[ -e "$DEPLOY_LOCK_FILE" ]] || die "Rejected deploy removed the lock holder's file"
+exec 8>&-
+rm -f "$DEPLOY_LOCK_FILE"
+
+# Symlinked lock paths are refused.
+ln -s "$TEST_ROOT/victim" "$DEPLOY_LOCK_FILE"
+if bash "$SCRIPT" --execute "$IMAGE" 2>/dev/null; then die "Symlink lock accepted"; fi
+[[ ! -e "$TEST_ROOT/victim" ]] || die "Symlink target was created/truncated"
+rm -f "$DEPLOY_LOCK_FILE"
+echo "MOCK_DEPLOY_PASS: schema gate, backup fail-closed, rollback, strict 200, signal rollback, lock handling, success"

@@ -202,6 +202,55 @@ class ProvenanceTests(unittest.TestCase):
             with self.assertRaises(provenance.ProvenanceError):
                 provenance.load_policy(Path("/etc/betasoft/policy.json"))
 
+    def flag_value(self, command, flag):
+        self.assertEqual(command.count(flag), 1)
+        return command[command.index(flag) + 1]
+
+    def test_cosign_binds_certificate_to_build_sha_and_repository(self):
+        seen = []
+        def fake_run(command, **kwargs):
+            seen.append(command)
+            return mock.Mock(returncode=0, stdout=self.encoded())
+        self.assertTrue(provenance.verify_image(self.image, self.policy, runner=fake_run))
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(self.flag_value(seen[0], "--certificate-github-workflow-sha"),
+                         self.build_sha)
+        self.assertEqual(self.flag_value(seen[0], "--certificate-github-workflow-repository"),
+                         "aristha/openproject")
+        self.assertEqual(seen[0][-1], self.image)
+
+    def test_malformed_build_sha_rejected_before_cosign(self):
+        for bad in ("B" * 40, "b" * 39, "b" * 41, "--sha", "", None, 7, "b" * 39 + "\n"):
+            runner = mock.Mock()
+            with self.subTest(sha=bad):
+                with self.assertRaises(provenance.ProvenanceError):
+                    provenance.verify_image(self.image, dict(self.policy, build_sha=bad),
+                                            runner=runner)
+                runner.assert_not_called()
+
+    def test_malformed_source_repository_rejected_before_cosign(self):
+        for bad in ("openproject", "a/b/c", "--x/y", "a b/c", None, ""):
+            runner = mock.Mock()
+            with self.subTest(repository=bad):
+                with self.assertRaises(provenance.ProvenanceError):
+                    provenance.verify_image(self.image, dict(self.policy, source_repository=bad),
+                                            runner=runner)
+                runner.assert_not_called()
+
+    def test_cosign_binary_with_real_nul_rejected(self):
+        runner = mock.Mock()
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.verify_image(self.image, self.policy, runner=runner,
+                                    cosign_binary="/usr/local/bin/cos\x00ign")
+        runner.assert_not_called()
+
+    def test_cosign_binary_with_literal_backslash_x00_is_not_a_nul(self):
+        # Only a real NUL is rejected; the 4-character text is a legal filename.
+        runner = mock.Mock(return_value=mock.Mock(returncode=0, stdout=self.encoded()))
+        self.assertTrue(provenance.verify_image(
+            self.image, self.policy, runner=runner,
+            cosign_binary="/opt/cos\\x00ign"))
+
     def test_cosign_timeout(self):
         def timeout(*args, **kwargs):
             raise subprocess.TimeoutExpired(cmd="cosign", timeout=90)
